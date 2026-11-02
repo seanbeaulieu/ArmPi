@@ -160,6 +160,20 @@ def test_history_and_log():
     assert json.loads(get("/api/log?since=-1"))["items"][-1]["kind"] == "error"
 
 
+
+def test_real_url_drives_remote_servers_real_arm():
+    # "Pi": a server whose real arm is a sim we can inspect
+    pi_board = SimBackend()
+    pi_srv, pi_app, pi_url, _ = start_server(lambda n: pi_board if n == "i2c" else SimBackend())
+    pc = App(Calibration.load(CAL_PATH), NoCamera(), "sim", real_url=pi_url)
+    assert pi_app.backend_name == "sim"          # nothing touched until selected
+    pc.post("/api/backend", {"name": "i2c"})
+    assert pi_app.backend_name == "i2c" and "via" in pc.label()
+    pc.post("/api/move", {"angles": {"base": 15}, "duration_ms": 400})
+    assert pi_board.history and pi_board.history[-1][1][6] == pc.calib.to_pulse("base", 15)
+    pi_srv.shutdown()
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

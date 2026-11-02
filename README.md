@@ -77,6 +77,11 @@ kinematic sim is used). One page shows:
 
 Backed by `GET /api/history?since=t` (20 Hz samples) and `GET /api/log?since=t`.
 
+The real arm is wired to the Pi, so "Real arm" on the PC needs the Pi's server running:
+on the Pi `.venv/bin/python -m armpi.server`, on the PC
+`python -m armpi.server --sim mujoco --real-url http://armpi.local:8000`. The PC studio then
+drives the Pi's arm, while sim stays local.
+
 ## MuJoCo
 
 `pip install mujoco` (CPU is fine). Same Arm code, physics underneath:

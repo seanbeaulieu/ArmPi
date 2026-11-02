@@ -32,6 +32,10 @@ class RemoteBackend(Backend):
         self._call("/api/servo_pulses", {"pulses": {str(s): int(us) for s, us in pulses.items()},
                                          "duration_ms": int(duration_ms)})
 
+    def select(self, name):
+        """Switch which backend the remote server drives ('i2c' = its real arm)."""
+        return self._call("/api/backend", {"name": name})
+
     def battery_mv(self):
         return self._call("/api/battery")["battery_mv"]
 

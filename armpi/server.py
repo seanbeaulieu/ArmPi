@@ -3,6 +3,8 @@
     python -m armpi.server            # simulator, http://armpi.local:8000
     python -m armpi.server --real     # start on the real arm
     python -m armpi.server --sim mujoco   # physics sim (e.g. on the PC: http://localhost:8000/studio)
+    python -m armpi.server --sim mujoco --real-url http://armpi.local:8000
+        # on the PC: "Real arm" drives the Pi's arm through the Pi's server
 
 The panel switches between sim and real at runtime (POST /api/backend). Each keeps its own
 Arm, so switching back finds the pose where it was left; both share one Calibration.
@@ -134,11 +136,12 @@ class App:
     HISTORY_S = 30
 
     def __init__(self, calib, camera, backend="sim", make_backend=make_backend, sim_kind="sim",
-                 sample=False):
+                 sample=False, real_url=None):
         """sim_kind: what 'sim' means, 'sim' (kinematic) or 'mujoco' (physics).
         sample=True starts a thread that steps physics and records history at SAMPLE_HZ."""
         self.calib, self.camera, self.make_backend = calib, camera, make_backend
         self.sim_kind = sim_kind
+        self.real_url = real_url  # None: real arm = local I2C board; URL: another armpi.server
         self.t0 = time.monotonic()
         self.history = collections.deque(maxlen=self.SAMPLE_HZ * self.HISTORY_S)
         self.log = collections.deque(maxlen=200)
@@ -188,7 +191,12 @@ class App:
     def _board(self):
         if self.board is None:
             try:
-                self.board = self.make_backend("i2c")
+                if self.real_url:
+                    board = self.make_backend(self.real_url)
+                    board.select("i2c")  # the remote server must drive its real arm, not its sim
+                    self.board = board
+                else:
+                    self.board = self.make_backend("i2c")
                 self.board_error = None
             except Exception as e:  # no smbus2, no /dev/i2c-1, ...
                 self.board_error = f"{type(e).__name__}: {e}"
@@ -211,7 +219,9 @@ class App:
         self.event("backend", f"backend -> {self.label()}")
 
     def label(self):
-        return "real arm" if self.backend_name == "i2c" else (
+        if self.backend_name == "i2c":
+            return f"real arm via {self.real_url}" if self.real_url else "real arm"
+        return (
             "mujoco sim" if self.sim_kind == "mujoco" else "kinematic sim")
 
     def state(self):
@@ -250,8 +260,11 @@ class App:
         if time.monotonic() - t < self.BATTERY_EVERY_S:
             return mv, source
         mv, source = None, None
+        # a remote real arm is only contacted once selected (don't flip its server, or block
+        # on a Pi that's off, just to show a voltage)
+        local_board = self.real_url is None or self.backend_name == "i2c"
         try:
-            if self._board() is not None:
+            if local_board and self._board() is not None:
                 mv, source = self.board.battery_mv(), "board"
             else:
                 mv, source = self.arm.battery_mv(), self.backend_name
@@ -414,9 +427,11 @@ def main(argv=None):
     p.add_argument("--camera", type=int, default=0, help="/dev/videoN")
     p.add_argument("--sim", default="sim", choices=["sim", "mujoco"],
                    help="what the sim backend is: kinematic ('sim') or physics ('mujoco')")
+    p.add_argument("--real-url", help="drive the real arm through another armpi.server "
+                   "(e.g. http://armpi.local:8000) instead of a local I2C board")
     a = p.parse_args(argv)
     app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim",
-              sim_kind=a.sim, sample=True)
+              sim_kind=a.sim, sample=True, real_url=a.real_url)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(app))
     srv.daemon_threads = True
     print(f"armpi server ({app.label()}) on http://{a.host}:{a.port}", flush=True)
