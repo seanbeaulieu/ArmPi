@@ -1,0 +1,64 @@
+# ArmPi Mini servo calibration. Units: degrees, microseconds.
+#
+# Joint angle conventions (same as kinematics.py):
+#   base:     yaw, 0 = pointing forward (+x), positive = toward +y (left)
+#   shoulder: upper arm angle above horizontal, 90 = straight up
+#   elbow:    relative to upper arm, 0 = straight, negative = bends down
+#   wrist:    relative to forearm; gripper pitch = shoulder + elbow + wrist (-90 = pointing down)
+#   gripper:  0 = closed, 1 = fully open
+#
+# pulse = zero_pulse + sign * (angle - zero_angle) * us_per_deg + trim
+#   zero_pulse / sign: SEED from Hiwonder ArmIK/ArmMoveIK.py (their angle -> pulse math,
+#     rewritten in the conventions above). Not yet checked against the real arm.
+#   trim: Hiwonder's per-arm factory offsets from yaml/Deviation.yaml.
+#   limits: PLACEHOLDERS until step 2 (calibration on the real arm).
+#   rest: Hiwonder Servo_test.py "center" pose, the folded pose the arm boots into.
+
+us_per_deg: 11.111          # 2000us = 180deg, as Hiwonder assumes
+
+joints:
+  base:
+    servo: 6
+    zero_pulse: 1500
+    zero_angle: 0
+    sign: 1
+    trim: -73
+    limits: [-90, 90]       # placeholder
+    rest: 0
+  shoulder:
+    servo: 5
+    zero_pulse: 1500
+    zero_angle: 90          # 1500us = upper arm vertical
+    sign: -1
+    trim: -30
+    limits: [0, 155]        # placeholder; 155 ~ Hiwonder rest pulse 780
+    rest: 154.8
+  elbow:
+    servo: 4
+    zero_pulse: 1500
+    zero_angle: 0
+    sign: -1
+    trim: -107
+    limits: [-90, 90]       # placeholder
+    rest: -82.4
+  wrist:
+    servo: 3
+    zero_pulse: 1500
+    zero_angle: 0
+    sign: 1
+    trim: -39
+    limits: [-90, 90]       # placeholder
+    rest: -72.5
+  gripper:
+    servo: 1
+    closed_pulse: 1500      # Hiwonder demos: 1500 closed, 2000 open
+    open_pulse: 2000
+    trim: -124
+    limits: [0, 1]
+    rest: 0
+
+# Speed guard: a move must take at least this many ms per us of the largest pulse change
+# (Hiwonder's own default is 1 ms/us). No position feedback, so the first move after start
+# also gets first_move_ms because the arm's real pose is unknown.
+min_ms_per_us: 1.0
+first_move_ms: 1500
