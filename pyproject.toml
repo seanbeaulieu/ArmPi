@@ -20,4 +20,4 @@ armpi = "armpi.__main__:main"
 packages = ["armpi", "armpi.backends"]
 
 [tool.setuptools.package-data]
-armpi = ["calibration.yaml"]
+armpi = ["calibration.yaml", "web/*.html"]

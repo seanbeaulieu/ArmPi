@@ -30,7 +30,7 @@ class Arm:
                 raise ValueError(f"{joint} angle is {a}")
             target[joint] = self.calib.clamp(joint, a)
         pulses = {j: self.calib.to_pulse(j, a) for j, a in target.items()}
-        duration_ms = self._send(pulses, duration_ms)
+        duration_ms = self.send_pulses(pulses, duration_ms)
         if wait:
             time.sleep(duration_ms / 1000)
         return target, duration_ms
@@ -39,7 +39,7 @@ class Arm:
         """Raw pulse (trim included) for one joint, bypassing angle limits. For calibration."""
         if not protocol.PULSE_MIN <= pulse <= protocol.PULSE_MAX:
             raise ValueError(f"pulse {pulse} outside [{protocol.PULSE_MIN}, {protocol.PULSE_MAX}]")
-        duration_ms = self._send({joint: int(pulse)}, duration_ms)
+        duration_ms = self.send_pulses({joint: int(pulse)}, duration_ms)
         if wait:
             time.sleep(duration_ms / 1000)
         return duration_ms
@@ -48,7 +48,8 @@ class Arm:
         """The folded pose the arm boots into."""
         return self.move(self.calib.rest(), duration_ms, wait)
 
-    def _send(self, pulses, duration_ms):
+    def send_pulses(self, pulses, duration_ms=None):
+        """{joint: pulse} (trim included), with the speed guard. Returns duration used."""
         known = [abs(us - self.pulses[j]) for j, us in pulses.items() if j in self.pulses]
         if len(known) < len(pulses):
             floor = self.calib.first_move_ms  # real position unknown: go slow

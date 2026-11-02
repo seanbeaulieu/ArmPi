@@ -8,8 +8,9 @@ DEFAULT_PATH = Path(__file__).with_name("calibration.yaml")
 
 
 class Calibration:
-    def __init__(self, data):
+    def __init__(self, data, path=None):
         self.data = data
+        self.path = path  # where save() writes; None = the packaged calibration.yaml
         self.us_per_deg = data["us_per_deg"]
         self.min_ms_per_us = data["min_ms_per_us"]
         self.first_move_ms = data["first_move_ms"]
@@ -18,10 +19,22 @@ class Calibration:
     @classmethod
     def load(cls, path=None):
         with open(path or DEFAULT_PATH) as f:
-            return cls(yaml.safe_load(f))
+            return cls(yaml.safe_load(f), path)
 
     def save(self, path=None):
-        with open(path or DEFAULT_PATH, "w") as f:
+        """Write the yaml back, keeping the file's leading comment block (the conventions)."""
+        path = path or self.path or DEFAULT_PATH
+        header = ""
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.strip() and not line.startswith("#"):
+                        break
+                    header += line
+        except FileNotFoundError:
+            pass
+        with open(path, "w") as f:
+            f.write(header)
             yaml.safe_dump(self.data, f, sort_keys=False)
 
     def servo(self, joint):
