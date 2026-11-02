@@ -46,7 +46,13 @@ class Camera:
         self.thread = None
 
     def _run(self):
-        import cv2
+        try:
+            import cv2
+        except ImportError:
+            self.error = "opencv (python3-opencv) not installed"
+            with self.cond:
+                self.cond.notify_all()
+            return
         cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.size[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.size[1])
