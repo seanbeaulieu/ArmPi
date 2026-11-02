@@ -25,12 +25,17 @@ class NoCamera:
         return None
 
 
-def start_server():
+def no_board(name):
+    if name == "i2c":
+        raise FileNotFoundError("/dev/i2c-1")
+    return SimBackend()
+
+
+def start_server(make_backend=no_board):
     tmp = tempfile.mkdtemp()
     cal_path = os.path.join(tmp, "calibration.yaml")
     shutil.copy(DEFAULT_PATH, cal_path)
-    server_arm = Arm(SimBackend(), Calibration.load(cal_path))
-    app = App(server_arm, NoCamera(), "sim")
+    app = App(Calibration.load(cal_path), NoCamera(), "sim", make_backend)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, app, f"http://127.0.0.1:{srv.server_address[1]}", cal_path
@@ -95,6 +100,39 @@ def test_calibrate_marks_save_to_file():
     assert abs(saved.limits("shoulder")[0] - 40) < 0.2
     assert open(CAL_PATH).read().startswith("# ArmPi Mini servo calibration")  # header kept
     assert DEFAULT_PATH.read_text() != open(CAL_PATH).read()  # repo file untouched
+
+
+def test_live_angles_follow_sim_motion():
+    post("/api/rest", {"duration_ms": 0})
+    post("/api/move", {"angles": {"base": 40}, "duration_ms": 3000})
+    s = json.loads(get("/api/state"))
+    assert abs(s["angles"]["base"] - 40) < 0.1 and abs(s["live"]["base"] - 40) > 5  # still on its way
+    assert s["target_fk"]["fingertip"] != s["fk"]["fingertip"]
+
+
+def test_switch_backend_without_board_stays_on_sim():
+    code, r = post("/api/backend", {"name": "i2c"})
+    assert code == 502 and "/dev/i2c-1" in r["error"]
+    code, r = post("/api/backend", {"name": "bogus"})
+    assert code == 400
+    s = json.loads(get("/api/state"))
+    assert s["backend"] == "sim" and s["battery_source"] == "sim" and s["board_error"]
+
+
+def test_switch_backend_keeps_each_arms_pose():
+    board = SimBackend(battery_mv=6900)  # stands in for the I2C board
+    srv, app, url, _ = start_server(lambda name: board if name == "i2c" else SimBackend())
+    try:
+        assert app.state()["battery_mv"] == 6900  # board battery shown even in sim mode
+        app.post("/api/move", {"angles": {"base": 10}})
+        app.post("/api/backend", {"name": "i2c"})
+        assert app.state()["backend"] == "i2c" and app.arm.angles == {}  # real pose unknown
+        app.post("/api/move", {"angles": {"base": -20}})
+        assert board.history[-1][1] == {6: app.calib.to_pulse("base", -20)}
+        app.post("/api/backend", {"name": "sim"})
+        assert abs(app.arm.angles["base"] - 10) < 0.1
+    finally:
+        srv.shutdown()
 
 
 def test_web_panel_served():
