@@ -430,6 +430,12 @@ def main(argv=None):
     p.add_argument("--real-url", help="drive the real arm through another armpi.server "
                    "(e.g. http://armpi.local:8000) instead of a local I2C board")
     a = p.parse_args(argv)
+    if a.sim == "mujoco":
+        try:
+            import mujoco  # noqa: F401
+        except ImportError:
+            p.error("--sim mujoco needs MuJoCo: activate your venv (source .venv/bin/activate) "
+                    "and pip install mujoco")
     app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim",
               sim_kind=a.sim, sample=True, real_url=a.real_url)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(app))
