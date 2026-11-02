@@ -3,6 +3,72 @@
 Our own control stack for the Hiwonder ArmPi Mini, replacing HiwonderSDK. The Hiwonder
 expansion board stays (it turns I2C commands into servo PWM); everything above it is ours.
 
+## Start here
+
+Everything below is typed in the **Ubuntu (WSL) terminal** on the PC, unless it says PowerShell.
+
+### First time only (once ever)
+
+1. Fix WSL networking so it can see the Pi. In **PowerShell**:
+
+       notepad $env:USERPROFILE\.wslconfig
+
+   Paste these two lines, save, close Notepad:
+
+       [wsl2]
+       networkingMode=mirrored
+
+   Then, still in PowerShell: `wsl --shutdown`, and reopen the Ubuntu terminal.
+
+2. Install Python's venv tool (asks for your PC's Linux password):
+
+       sudo apt install -y python3-venv
+
+3. Go to the repo and grab the latest code:
+
+       cd "/mnt/c/Projects/armpi mini/armpi/ArmPi"
+       git pull
+
+4. Put the code on the Pi and make its server start by itself on every boot
+   (asks for the **Pi's** password a few times, that's normal):
+
+       tools/deploy.sh --serve
+
+   It should end with `active`.
+
+### Every time
+
+1. Turn the Pi on. Wait ~1 minute for wifi.
+2. In the Ubuntu terminal:
+
+       cd "/mnt/c/Projects/armpi mini/armpi/ArmPi"
+       tools/studio.sh
+
+   The first run takes a few minutes (installs MuJoCo). It prints either
+   `pi server found` or `sim only`.
+3. In your browser open **http://localhost:8001/studio**
+4. **Sim** button = practice arm (MuJoCo). **Real arm** button = the actual arm.
+5. Done? Click in the terminal and press **Ctrl+C**.
+
+### After pulling new code
+
+    git pull
+    tools/deploy.sh --serve
+
+### When something's wrong
+
+| You see | Do |
+|---|---|
+| `sim only` but the Pi is on | Pi got a new IP. PowerShell: `ping armpi.local`, then `ARMPI_HOST=<that ip> tools/studio.sh` (and the same prefix for deploy.sh) |
+| `No route to host` | Step 1 of first-time setup didn't take: redo `.wslconfig` + `wsl --shutdown` |
+| `python: command not found` / `No module named mujoco` | Use `tools/studio.sh`, not `python -m ...` |
+| Real arm doesn't move, or shoulder/claw stall | Arm battery is low (studio shows battery in the top bar; want 7V+). Charge it |
+| Pi password prompts every time | Once: `ssh-copy-id seanbeaulieu_armpi@10.0.0.133` |
+| Want the Pi's own page | http://armpi.local:8000/studio (simple sim, no MuJoCo) |
+
+Joint limits in `armpi/calibration.yaml` are still guesses: keep real-arm moves small until
+the arm is calibrated.
+
 ## Hardware facts
 
 - Raspberry Pi 4, 64-bit Pi OS (trixie). Host `armpi.local`, user `seanbeaulieu_armpi`.
@@ -60,19 +126,6 @@ tools/deploy.sh --test    # copy the working tree to ~/ArmPi on the Pi, install,
 ```
 
 Tests need no hardware: `python tests/test_armpi.py` (or pytest).
-
-## Quick start
-
-Once, from the PC (WSL/Git Bash, in this repo):
-
-    tools/deploy.sh --serve     # copy to the Pi, install, run its server at boot from now on
-
-Every time:
-
-    tools/studio.sh             # PC: http://localhost:8001/studio, Ctrl+C to stop
-
-Pi off? Studio still runs with the MuJoCo sim only. After code changes: `git pull` and
-`tools/deploy.sh --serve` again.
 
 ## Arm Studio (GUI)
 
