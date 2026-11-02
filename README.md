@@ -20,7 +20,10 @@ expansion board stays (it turns I2C commands into servo PWM); everything above i
     armpi/calibration.py     the conversion
     armpi/kinematics.py      FK / IK (mm, degrees)
     armpi/arm.py             Arm: named joints, clamps to limits, speed guard
+    armpi/mujoco_model.py    MuJoCo MJCF generated from the same link lengths (checked == fk)
+    armpi/backends/mujoco.py physics sim: board-style pulse ramps -> position servos w/ torque limits
     tools/deploy.sh          sync to the Pi and install
+    tools/mujoco_view.py     watch the arm run a demo in MuJoCo
 
 Angle conventions are at the top of `calibration.yaml`. Gripper is 0 (closed) .. 1 (open).
 
@@ -57,3 +60,23 @@ tools/deploy.sh --test    # copy the working tree to ~/ArmPi on the Pi, install,
 ```
 
 Tests need no hardware: `python tests/test_armpi.py` (or pytest).
+
+## MuJoCo
+
+`pip install mujoco` (CPU is fine). Same Arm code, physics underneath:
+
+```python
+from armpi import Arm
+from armpi.backends.mujoco import MujocoBackend
+be = MujocoBackend()            # deterministic: time advances only via be.advance()
+arm = Arm(be)
+arm.move_to((120, 0, 40), -90, 1200)
+be.advance(1.5)
+print(be.joint_angles(), be.fingertip_mm())   # where the joints actually ended up
+```
+
+`armpi.connect("mujoco")` gives a wall-clock version (call `sync()`). Servo gains, torque and
+link masses in `mujoco_model.py` are estimates; tune them against the real arm (step response
+filmed with the wrist cam) to close the sim2real gap. `python tools/mujoco_view.py` opens a viewer.
+
+CI (`.github/workflows/test.yml`) runs all tests, MuJoCo included, on every push.
