@@ -88,6 +88,8 @@ the arm is calibrated.
     armpi/arm.py             Arm: named joints, clamps to limits, speed guard
     armpi/mujoco_model.py    MuJoCo MJCF generated from the same link lengths (checked == fk)
     armpi/backends/mujoco.py physics sim: board-style pulse ramps -> position servos w/ torque limits
+    armpi/sysid.py           film step moves with the wrist cam, fit the MuJoCo servo params
+    armpi/vision.py          wrist cam calibration (intrinsics, hand-eye) and pixel -> table xyz
     tools/deploy.sh          sync to the Pi and install
     tools/mujoco_view.py     watch the arm run a demo in MuJoCo
 
@@ -163,7 +165,51 @@ print(be.joint_angles(), be.fingertip_mm())   # where the joints actually ended 
 ```
 
 `armpi.connect("mujoco")` gives a wall-clock version (call `sync()`). Servo gains, torque and
-link masses in `mujoco_model.py` are estimates; tune them against the real arm (step response
-filmed with the wrist cam) to close the sim2real gap. `python tools/mujoco_view.py` opens a viewer.
+link masses in `mujoco_model.py` are estimates until you fit them (below); a fitted
+`armpi/sim_params.yaml` overrides them. `python tools/mujoco_view.py` opens a viewer.
+
+## Wrist camera: calibrate, then blocks -> xyz
+
+Needs `pip install numpy scipy opencv-python-headless matplotlib` in the PC venv (the Pi
+already has numpy + opencv). Everything talks to the Pi's server, so it must be running.
+
+1. **Board.** `python -m armpi.vision board` writes `charuco_board.png`. Print it at 100% on
+   A4/letter, tape it flat to something stiff, and **measure one square with calipers**
+   (pass that as `--square-mm` everywhere below; nominal 30).
+2. **Intrinsics** (arm not moving): `python -m armpi.vision intrinsics --url http://armpi.local:8000 --square-mm 30.0`.
+   Hold the board in front of the camera; press Enter for each of ~20 views: near, far,
+   tilted ~30-45 deg each way, board in each corner of the image. Want rms < 0.6px.
+3. **Joint calibration first** (Arm Studio, calibrate tab), or hand-eye inherits the error.
+4. **Hand-eye** (arm moves): lay the board flat on the table, centered ~130mm in front of
+   the base. `python -m armpi.vision handeye --url http://armpi.local:8000 --square-mm 30.0`
+   moves through ~12 poses looking at it. Check its printout: board scatter < 5mm, board
+   normal ~[0, 0, -1].
+5. **Use it.** `python -m armpi.vision locate` prints each red/green/blue block's xyz;
+   `python -m armpi.vision reach --color red` hovers 40mm over it. `GET /api/vision/blocks`
+   on the Pi's server gives the same as JSON. Results land in `armpi/camera.yaml`;
+   `tools/deploy.sh` carries it to the Pi.
+
+The camera pose comes from the **commanded** angles (no feedback), so sag shows up as
+target error. Calibrate and pick from similar poses.
+
+## Tune the sim to the real arm (system identification)
+
+Each run steps ONE joint (+-10 deg fast, +-15 deg at 600/300ms) while the wrist cam films
+the board on the table. The camera's rotation is the joint's motion, so this only needs
+intrinsics (step 2 above), not joint or hand-eye calibration.
+
+    # on the Pi (same clock as the server), board on the table under the camera:
+    ssh seanbeaulieu_armpi@armpi.local
+    cd ~/ArmPi && for j in base shoulder elbow wrist; do
+      .venv/bin/python -m armpi.sysid capture --joint $j --out runs/$j; done
+    # back on the PC:
+    scp -r seanbeaulieu_armpi@armpi.local:ArmPi/runs .
+    python -m armpi.sysid measure runs/* --square-mm 30.0
+    python -m armpi.sysid fit runs/*        # -> armpi/sim_params.yaml
+    python -m armpi.sysid plot runs/*       # runs/<joint>/fit.png: measured vs sim
+
+Fitted: kp, damping and torque limit per joint, plus the camera delay. The start pose
+(`sysid.START`) aims the camera ~140mm ahead; pass `--start '{"shoulder": 65}'` if the board
+isn't in view.
 
 CI (`.github/workflows/test.yml`) runs all tests, MuJoCo included, on every push.

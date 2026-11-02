@@ -13,6 +13,8 @@ dependencies = ["pyyaml"]
 hw = ["smbus2"]
 dev = ["pytest"]
 sim = ["mujoco"]
+vision = ["numpy", "opencv-python-headless"]
+fit = ["mujoco", "numpy", "scipy", "opencv-python-headless", "matplotlib"]
 
 [project.scripts]
 armpi = "armpi.__main__:main"
@@ -21,4 +23,4 @@ armpi = "armpi.__main__:main"
 packages = ["armpi", "armpi.backends"]
 
 [tool.setuptools.package-data]
-armpi = ["calibration.yaml", "web/*.html"]
+armpi = ["calibration.yaml", "sim_params.yaml", "camera.yaml", "web/*.html"]

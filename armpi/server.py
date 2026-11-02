@@ -23,7 +23,8 @@ Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move th
     POST /api/servo_pulses     {"pulses": {"6": 1500}, "duration_ms": 300}         used by RemoteBackend
     POST /api/rest             {"duration_ms": 1500}
     POST /api/calibrate        {"joint": "shoulder", "mark": "zero", "angle": 90}  see Calibrator
-    GET  /stream.mjpg, /snapshot.jpg
+    GET  /api/vision/blocks    colored blocks in the wrist cam -> table xyz (see armpi/vision.py)
+    GET  /stream.mjpg, /snapshot.jpg   (stream parts carry X-T: grab time on the /api/log clock)
 """
 import argparse
 import collections
@@ -48,6 +49,7 @@ class Camera:
     def __init__(self, device=0, width=640, height=480, quality=80):
         self.device, self.size, self.quality = device, (width, height), quality
         self.jpeg = None
+        self.stamp = None  # time.monotonic() when self.jpeg was grabbed
         self.error = None
         self.cond = threading.Condition()
         self.thread = None
@@ -70,12 +72,14 @@ class Camera:
             return
         while True:
             ok, frame = cap.read()
+            grabbed = time.monotonic()
             if not ok:
                 time.sleep(0.1)
                 continue
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
             with self.cond:
                 self.jpeg = buf.tobytes()
+                self.stamp = grabbed
                 self.cond.notify_all()
 
     def frame(self, timeout=5.0, after=None):
@@ -276,12 +280,14 @@ class App:
     def post(self, path, body):
         with self.lock:
             self._sync()
+            t = self.now()
             try:
                 out = self._post(path, body)
             except Exception as e:
                 self.event("error", f"{path}: {e}")
                 raise
             self._log_post(path, body, out)
+            out.setdefault("t", t)  # server clock when the command went to the backend
             return out
 
     def _log_post(self, path, body, out):
@@ -329,6 +335,27 @@ class App:
         raise KeyError(path)
 
 
+def vision_blocks(app):
+    """Blocks seen by the camera right now, with base-frame xyz from the commanded pose."""
+    try:
+        import cv2
+        import numpy as np
+        from . import vision
+    except ImportError as e:
+        return 503, {"error": f"vision needs numpy + opencv: {e}"}
+    jpg = app.camera.frame()
+    if jpg is None:
+        return 503, {"error": app.camera.error or "no camera frame"}
+    with app.lock:
+        angles = dict(app.arm.angles)
+    if not all(j in angles for j in ("base", "shoulder", "elbow", "wrist")):
+        return 409, {"error": "arm pose unknown: move the arm first"}
+    cam = vision.Camera.load()
+    img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+    return 200, {"blocks": vision.locate_blocks(img, angles, cam), "angles": angles,
+                 "camera_guess": [k for k, v in cam.guess.items() if v], "size": [img.shape[1], img.shape[0]]}
+
+
 def _fk(angles):
     if all(j in angles for j in ("base", "shoulder", "elbow", "wrist")):
         return fk(angles)
@@ -370,6 +397,8 @@ def make_handler(app):
                 with app.lock:
                     mv, source = app._battery()
                 return self._send(200, {"battery_mv": mv, "source": source})
+            if path == "/api/vision/blocks":
+                return self._send(*vision_blocks(app))
             if path == "/snapshot.jpg":
                 jpg = app.camera.frame()
                 return self._send(200, jpg, "image/jpeg") if jpg else self._send(503, {"error": app.camera.error})
@@ -391,8 +420,13 @@ def make_handler(app):
                     if jpg is None:
                         return
                     if jpg is not last:
-                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                                         + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                        # X-T: grab time on the server clock (same as "t" in /api/move replies
+                        # and /api/log), so tools can line frames up with commands
+                        stamp = getattr(app.camera, "stamp", None)
+                        t = b"" if stamp is None else b"X-T: %.4f\r\n" % (stamp - app.t0)
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n" + t
+                                         + b"Content-Length: " + str(len(jpg)).encode()
+                                         + b"\r\n\r\n" + jpg + b"\r\n")
                     last = jpg
             except (BrokenPipeError, ConnectionResetError):
                 pass
