@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arm Studio</title>
+<style>
+  :root { --bg:#f4f4f1; --panel:#fff; --ink:#1c1c1a; --mute:#6d6d67; --line:#e0e0da; --grid:#e6e6e0;
+          --accent:#2f6fde; --cmd:#2f6fde; --live:#8a8a84; --act:#1c1c1a; --warn:#c2410c; --ok:#15803d;
+          --trail:#d97706; --target:#db2777; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#121211; --panel:#1c1c1a; --ink:#ececea; --mute:#9a9a94; --line:#30302d; --grid:#262624;
+            --accent:#6c9cf0; --cmd:#6c9cf0; --live:#77776f; --act:#ececea; --warn:#f08a4b; --ok:#4ade80;
+            --trail:#f59e0b; --target:#f472b6; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 system-ui, sans-serif; }
+  header { display:flex; gap:14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
+           flex-wrap:wrap; background:var(--panel); }
+  header h1 { font-size:15px; margin:0 6px 0 0; }
+  header a { color:var(--accent); margin-left:auto; text-decoration:none; }
+  .stat { color:var(--mute); white-space:nowrap; }
+  .stat b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
+  .pill { padding:2px 8px; border-radius:99px; background:var(--bg); border:1px solid var(--line); }
+  .pill.real { border-color:var(--warn); color:var(--warn); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-right:5px; }
+  .dot.off { background:var(--warn); }
+  main { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(320px,1fr); gap:12px; padding:12px; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin:0 0 8px;
+       display:flex; gap:10px; align-items:center; }
+  h2 .sp { flex:1; }
+  .col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  #view { width:100%; height:min(62vh,560px); display:block; cursor:grab; touch-action:none; border-radius:6px; }
+  #view.reach { cursor:crosshair; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; color:var(--mute); font-size:12px; margin-top:6px; }
+  .sw { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin-right:5px; }
+  .tools { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  button { padding:5px 10px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--ink);
+           font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.real.on { background:var(--warn); border-color:var(--warn); }
+  input[type=number] { width:64px; padding:4px 5px; border:1px solid var(--line); border-radius:4px;
+                       background:var(--bg); color:var(--ink); font:inherit; }
+  label.chk { color:var(--mute); display:inline-flex; gap:4px; align-items:center; }
+  .joint { display:grid; grid-template-columns:64px 1fr 92px; gap:8px; align-items:center; margin:8px 0; }
+  .joint .name { font-weight:600; }
+  .joint .val { text-align:right; font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; font-size:12px; }
+  .joint .val small { color:var(--mute); display:block; }
+  .track { position:relative; height:26px; }
+  .track .rail { position:absolute; left:0; right:0; top:11px; height:4px; background:var(--grid); border-radius:2px; }
+  .track .lim { position:absolute; top:10px; height:6px; background:var(--live); opacity:.45; border-radius:3px; }
+  .track .warnzone { position:absolute; top:9px; height:8px; background:var(--warn); opacity:.25; border-radius:2px; }
+  .track .mk { position:absolute; top:4px; width:2px; height:18px; margin-left:-1px; }
+  .track .mk.cmd { background:var(--cmd); }
+  .track .mk.act { background:var(--act); width:10px; height:10px; top:8px; margin-left:-5px; border-radius:50%; }
+  .track input { position:absolute; inset:0; width:100%; opacity:0; cursor:pointer; margin:0; }
+  .plots canvas { width:100%; height:62px; display:block; }
+  .plot { display:grid; grid-template-columns:64px 1fr 56px; gap:8px; align-items:center; margin:6px 0; }
+  .plot .err { text-align:right; font-family:ui-monospace,monospace; font-size:12px; color:var(--mute); }
+  .plot .err.hi { color:var(--warn); }
+  #log { height:180px; overflow:auto; font-family:ui-monospace,monospace; font-size:12px; }
+  #log div { padding:2px 0; border-bottom:1px solid var(--grid); display:grid; grid-template-columns:58px 72px 1fr; gap:6px; }
+  #log .t { color:var(--mute); text-align:right; }
+  #log .k { color:var(--mute); }
+  #log .warn { color:var(--warn); }
+  #log .error { color:var(--warn); font-weight:600; }
+  .reachbox { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+  .reachbox span { color:var(--mute); }
+  #msg { color:var(--mute); min-height:1.4em; margin-top:6px; }
+  #msg.err { color:var(--warn); }
+  .empty { color:var(--mute); font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arm Studio</h1>
+  <span class="tools"><button id="m_sim" data-mode="sim">Sim</button><button id="m_i2c" class="real" data-mode="i2c">Real arm</button></span>
+  <span class="pill" id="label">…</span>
+  <span class="stat"><span class="dot" id="conn"></span>t <b id="time">–</b></span>
+  <span class="stat">fingertip <b id="tip">–</b></span>
+  <span class="stat">pitch <b id="pitch">–</b></span>
+  <span class="stat">battery <b id="battery">–</b></span>
+  <a href="/">control panel →</a>
+</header>
+<main>
+  <div class="col">
+    <section>
+      <h2>3D view <span class="sp"></span>
+        <label class="chk"><input type="checkbox" id="o_ghost" checked>commanded</label>
+        <label class="chk"><input type="checkbox" id="o_trail" checked>trail</label>
+        <label class="chk"><input type="checkbox" id="o_env" checked>reach</label>
+        <button id="b_view">reset view</button>
+      </h2>
+      <canvas id="view"></canvas>
+      <div class="legend">
+        <span><span class="sw" style="border-color:var(--act)"></span>actual (physics)</span>
+        <span><span class="sw" style="border-color:var(--cmd);border-top-style:dashed"></span>commanded target</span>
+        <span><span class="sw" style="border-color:var(--trail)"></span>fingertip trail (5 s)</span>
+        <span><span class="sw" style="border-color:var(--warn)"></span>joint near limit</span>
+        <span>drag: orbit · wheel: zoom · shift-drag: pan</span>
+      </div>
+      <div class="reachbox">
+        <button id="b_reach">click-to-reach</button>
+        <span>height</span><input type="number" id="r_z" value="30">
+        <span>pitch</span><input type="number" id="r_p" value="-90">
+        <span>x</span><input type="number" id="r_x" value="120">
+        <span>y</span><input type="number" id="r_y" value="0">
+        <button id="b_go">go</button>
+        <span>ms</span><input type="number" id="r_ms" value="1000">
+      </div>
+      <div id="msg"></div>
+    </section>
+    <section class="plots">
+      <h2>Joint tracking (last 10 s) <span class="sp"></span>
+        <span class="legend" style="margin:0"><span><span class="sw" style="border-color:var(--cmd);border-top-style:dashed"></span>cmd</span>
+        <span><span class="sw" style="border-color:var(--live)"></span>board ramp</span>
+        <span><span class="sw" style="border-color:var(--act)"></span>actual</span><span>|err| max</span></span>
+      </h2>
+      <div id="plots"></div>
+    </section>
+  </div>
+  <div class="col">
+    <section>
+      <h2>Joints <span class="sp"></span><button id="b_rest">rest</button><button id="b_demo">demo</button>
+        <button id="b_open">open</button><button id="b_close">close</button></h2>
+      <div id="joints"></div>
+      <div class="legend"><span><span class="sw" style="border-color:var(--cmd)"></span>commanded</span>
+        <span>● actual</span><span>grey bar = calibration limits · drag a bar to move</span></div>
+    </section>
+    <section>
+      <h2>Event log <span class="sp"></span><button id="b_clear">clear</button></h2>
+      <div id="log"><div class="empty" style="display:block">nothing yet</div></div>
+    </section>
+  </div>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const JOINTS = ['base', 'shoulder', 'elbow', 'wrist', 'gripper'];
+const ARM = ['base', 'shoulder', 'elbow', 'wrist'];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let S = null;              // latest /api/state
+let H = [];                // history samples
+let lastHist = -1, lastLog = -1, logShown = 0;
+let online = true;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function say(t, err) { $('msg').textContent = t || ''; $('msg').className = err ? 'err' : ''; }
+async function act(path, body) {
+  try { const r = await api(path, body); say(''); poll(); return r; }
+  catch (e) { say(e.message, true); }
+}
+
+// ---------- kinematics (mirror of armpi/kinematics.py, for drawing) ----------
+function fkPoints(a, L) {
+  if (!a || ARM.some(j => a[j] == null)) return null;
+  const d = Math.PI / 180, yaw = a.base * d, a1 = a.shoulder * d, a2 = a1 + a.elbow * d, a3 = a2 + a.wrist * d;
+  const tool = L.wrist_to_gripper + L.fingers;
+  const P = [];
+  let r = 0, z = L.base_height; P.push([0, 0]); P.push([r, z]);
+  r = L.shoulder_offset; z = L.base_height + L.turntable_to_shoulder; P.push([r, z]);
+  r += L.upper_arm * Math.cos(a1); z += L.upper_arm * Math.sin(a1); P.push([r, z]);
+  r += L.forearm * Math.cos(a2); z += L.forearm * Math.sin(a2); P.push([r, z]);
+  const gb = [r + L.wrist_to_gripper * Math.cos(a3), z + L.wrist_to_gripper * Math.sin(a3)];
+  const tip = [r + tool * Math.cos(a3), z + tool * Math.sin(a3)];
+  P.push(gb); P.push(tip);
+  const w = ([rr, zz]) => [rr * Math.cos(yaw), rr * Math.sin(yaw), zz];
+  const pts = P.map(w);
+  // gripper fingers: open width up to 40mm, perpendicular to the arm plane
+  const g = Math.max(0, Math.min(1, a.gripper ?? 0)) * 20 + 3;
+  const side = [-Math.sin(yaw) * g, Math.cos(yaw) * g, 0];
+  const add = (p, s, k) => [p[0] + s[0] * k, p[1] + s[1] * k, p[2] + s[2] * k];
+  return {table: pts[0], turntable: pts[1], shoulder: pts[2], elbow: pts[3], wrist: pts[4], gb: pts[5], tip: pts[6],
+          fl: [add(pts[5], side, 1), add(pts[6], side, 1)], fr: [add(pts[5], side, -1), add(pts[6], side, -1)],
+          pitch: a.shoulder + a.elbow + a.wrist};
+}
+
+// ---------- tiny 3D camera on a 2D canvas ----------
+const V = {yaw: -0.75, pitch: 0.42, dist: 620, target: [60, 0, 90]};
+const V0 = {...V, target: [...V.target]};
+const cv = $('view'), cx = cv.getContext('2d');
+let W = 0, Hh = 0, DPR = 1;
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = cv.clientWidth; Hh = cv.clientHeight;
+  cv.width = W * DPR; cv.height = Hh * DPR;
+}
+function basis() {
+  const cp = Math.cos(V.pitch), sp = Math.sin(V.pitch), cy = Math.cos(V.yaw), sy = Math.sin(V.yaw);
+  const fwd = [-cp * cy, -cp * sy, -sp];                   // camera looks along fwd
+  const right = [-sy, cy, 0];
+  const up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+  const eye = [V.target[0] - fwd[0] * V.dist, V.target[1] - fwd[1] * V.dist, V.target[2] - fwd[2] * V.dist];
+  return {fwd, right, up, eye};
+}
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+let B = basis();
+function proj(p) {
+  const d = [p[0] - B.eye[0], p[1] - B.eye[1], p[2] - B.eye[2]];
+  const z = dot(d, B.fwd); if (z < 1) return null;
+  const f = Math.min(W, Hh) * 1.1;
+  return [W / 2 + f * dot(d, B.right) / z, Hh / 2 - f * dot(d, B.up) / z, z];
+}
+// screen point -> ray -> intersection with plane z = h
+function unproject(sx, sy, h) {
+  const f = Math.min(W, Hh) * 1.1;
+  const u = (sx - W / 2) / f, v = (Hh / 2 - sy) / f;
+  const dir = [B.fwd[0] + B.right[0] * u + B.up[0] * v, B.fwd[1] + B.right[1] * u + B.up[1] * v, B.fwd[2] + B.right[2] * u + B.up[2] * v];
+  if (Math.abs(dir[2]) < 1e-6) return null;
+  const t = (h - B.eye[2]) / dir[2]; if (t <= 0) return null;
+  return [B.eye[0] + dir[0] * t, B.eye[1] + dir[1] * t, h];
+}
+function line(a, b, color, w = 2, dash) {
+  const p = proj(a), q = proj(b); if (!p || !q) return;
+  cx.strokeStyle = color; cx.lineWidth = w; cx.setLineDash(dash || []);
+  cx.beginPath(); cx.moveTo(p[0], p[1]); cx.lineTo(q[0], q[1]); cx.stroke(); cx.setLineDash([]);
+}
+function poly(pts, color, w = 1, dash, fill) {
+  const ps = pts.map(proj); if (ps.some(p => !p)) return;
+  cx.beginPath(); ps.forEach((p, i) => i ? cx.lineTo(p[0], p[1]) : cx.moveTo(p[0], p[1]));
+  if (fill) { cx.fillStyle = fill; cx.fill(); }
+  if (color) { cx.strokeStyle = color; cx.lineWidth = w; cx.setLineDash(dash || []); cx.stroke(); cx.setLineDash([]); }
+}
+function ball(p, r, color, ring) {
+  const q = proj(p); if (!q) return;
+  const rr = Math.max(2, r * Math.min(W, Hh) * 1.1 / q[2]);
+  cx.beginPath(); cx.arc(q[0], q[1], rr, 0, 7);
+  if (ring) { cx.strokeStyle = color; cx.lineWidth = 2; cx.stroke(); } else { cx.fillStyle = color; cx.fill(); }
+}
+function text(p, s, color) { const q = proj(p); if (!q) return; cx.fillStyle = color; cx.fillText(s, q[0] + 6, q[1] - 6); }
+
+function nearLimit(j, a) {
+  const lim = S?.calibration?.[j]?.limits; if (!lim || a == null || j === 'gripper') return false;
+  const m = Math.max(3, (lim[1] - lim[0]) * 0.04);
+  return a < lim[0] + m || a > lim[1] - m;
+}
+
+function drawArm(P, a, color, w, dash, joints) {
+  const segs = [['turntable', 'shoulder'], ['shoulder', 'elbow'], ['elbow', 'wrist'], ['wrist', 'gb']];
+  const segJ = {shoulder: 'shoulder', elbow: 'elbow', wrist: 'wrist', gb: 'wrist'};
+  for (const [s, e] of segs) line(P[s], P[e], color, w, dash);
+  line(P.fl[0], P.fl[1], color, Math.max(1.5, w - 1), dash);
+  line(P.fr[0], P.fr[1], color, Math.max(1.5, w - 1), dash);
+  line(P.fl[0], P.fr[0], color, Math.max(1.5, w - 1), dash);
+  if (joints) {
+    for (const [pt, j] of [['turntable', 'base'], ['shoulder', 'shoulder'], ['elbow', 'elbow'], ['wrist', 'wrist']])
+      ball(P[pt], 6, nearLimit(j, a[j]) ? css('--warn') : color);
+    ball(P.tip, 4, css('--target'));
+  }
+}
+
+let reachMode = false, hover = null, lastClick = null;
+function draw() {
+  B = basis();
+  cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx.clearRect(0, 0, W, Hh);
+  cx.font = '11px system-ui';
+  const grid = css('--grid'), mute = css('--mute');
+  // table grid, 50mm cells
+  for (let i = -300; i <= 300; i += 50) {
+    line([i, -300, 0], [i, 300, 0], i === 0 ? css('--line') : grid, i === 0 ? 1.5 : 1);
+    line([-300, i, 0], [300, i, 0], i === 0 ? css('--line') : grid, i === 0 ? 1.5 : 1);
+  }
+  text([300, 0, 0], '+x', mute); text([0, 300, 0], '+y', mute);
+  if (!S) return;
+  const L = S.links;
+  // base box
+  const bh = L.base_height, b = 45;
+  for (const z of [0, bh]) poly([[b, b, z], [-b, b, z], [-b, -b, z], [b, -b, z], [b, b, z]], css('--line'), 1.5);
+  for (const [x, y] of [[b, b], [-b, b], [-b, -b], [b, -b]]) line([x, y, 0], [x, y, bh], css('--line'), 1.5);
+  // reach envelope: max fingertip reach circle at table height and at the clicked height
+  if ($('o_env').checked) {
+    const reach = L.upper_arm + L.forearm + L.wrist_to_gripper + L.fingers;
+    const zs = [L.base_height + L.turntable_to_shoulder];
+    const ring = (rad, z) => { const pts = []; for (let k = 0; k <= 72; k++) { const t = k / 72 * 2 * Math.PI; pts.push([rad * Math.cos(t), rad * Math.sin(t), z]); } return pts; };
+    poly(ring(reach, zs[0]), css('--line'), 1, [4, 4]);
+    const h = +$('r_z').value, dz = h - zs[0];
+    if (Math.abs(dz) < reach) poly(ring(Math.sqrt(reach * reach - dz * dz), h), grid, 1, [2, 4]);
+  }
+  const act = S.actual || S.live, cmd = S.angles;
+  const Pa = fkPoints(act, L), Pc = fkPoints(cmd, L);
+  // trail of actual fingertip
+  if ($('o_trail').checked && H.length > 1) {
+    const tnow = H[H.length - 1].t;
+    const pts = H.filter(s => tnow - s.t < 5).map(s => fkPoints(s.actual || s.live, L)).filter(Boolean).map(p => p.tip);
+    for (let i = 1; i < pts.length; i++) {
+      cx.globalAlpha = i / pts.length; line(pts[i - 1], pts[i], css('--trail'), 2); }
+    cx.globalAlpha = 1;
+  }
+  if ($('o_ghost').checked && Pc) drawArm(Pc, cmd, css('--cmd'), 2, [5, 4], false);
+  if (Pa) {
+    // shadow on the table
+    const sh = p => [p[0], p[1], 0];
+    poly([Pa.shoulder, Pa.elbow, Pa.wrist, Pa.tip].map(sh), null, 1, null, null);
+    for (const [s, e] of [['shoulder', 'elbow'], ['elbow', 'wrist'], ['wrist', 'tip']]) line(sh(Pa[s]), sh(Pa[e]), grid, 4);
+    drawArm(Pa, act, css('--act'), 4, null, true);
+    text(Pa.tip, Pa.tip.map(v => v.toFixed(0)).join(', '), mute);
+  }
+  if (!Pa && !Pc) { cx.fillStyle = mute; cx.fillText('pose unknown: move the arm (rest) to start', 16, 22); }
+  // reach target preview
+  const tgt = reachMode && hover ? hover : lastClick;
+  if (tgt) {
+    ball(tgt, 7, css('--target'), true);
+    line(tgt, [tgt[0], tgt[1], 0], css('--target'), 1, [2, 3]);
+  }
+}
+
+// orbit / pan / zoom / click-to-reach
+let drag = null;
+cv.addEventListener('pointerdown', e => {
+  if (reachMode && e.button === 0 && !e.shiftKey) {
+    const p = unproject(e.offsetX, e.offsetY, +$('r_z').value);
+    if (p) { lastClick = p; $('r_x').value = p[0].toFixed(0); $('r_y').value = p[1].toFixed(0); go(); }
+    return;
+  }
+  drag = {x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 1};
+  cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
+});
+cv.addEventListener('pointermove', e => {
+  if (reachMode && !drag) hover = unproject(e.offsetX, e.offsetY, +$('r_z').value);
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) {
+    const k = V.dist / 900;
+    for (let i = 0; i < 3; i++) V.target[i] += (B.right[i] * dx + B.up[i] * dy) * k;
+  } else {
+    V.yaw -= dx * 0.008; V.pitch = Math.max(-0.1, Math.min(1.5, V.pitch + dy * 0.006));
+  }
+});
+cv.addEventListener('pointerup', () => { drag = null; cv.style.cursor = ''; });
+cv.addEventListener('pointerleave', () => { hover = null; });
+cv.addEventListener('wheel', e => { e.preventDefault(); V.dist = Math.max(150, Math.min(2000, V.dist * Math.exp(e.deltaY * 0.001))); }, {passive: false});
+$('b_view').onclick = () => Object.assign(V, {...V0, target: [...V0.target]});
+$('b_reach').onclick = () => { reachMode = !reachMode; $('b_reach').className = reachMode ? 'on' : ''; cv.className = reachMode ? 'reach' : ''; };
+function go() {
+  lastClick = [+$('r_x').value, +$('r_y').value, +$('r_z').value];
+  act('/api/move_to', {xyz: lastClick, pitch: +$('r_p').value, duration_ms: +$('r_ms').value});
+}
+$('b_go').onclick = go;
+
+// ---------- joints panel ----------
+const JR = {};  // joint -> {lo, hi} display range
+function range(j) { return j === 'gripper' ? [0, 1] : (j === 'shoulder' ? [-10, 190] : [-150, 150]); }
+function buildJoints() {
+  const box = $('joints');
+  for (const j of JOINTS) {
+    const [lo, hi] = range(j); JR[j] = {lo, hi};
+    const row = document.createElement('div'); row.className = 'joint';
+    row.innerHTML = `<span class="name">${j}</span>
+      <div class="track"><div class="rail"></div><div class="lim" id="lim_${j}"></div>
+        <div class="warnzone" id="wl_${j}"></div><div class="warnzone" id="wh_${j}"></div>
+        <div class="mk cmd" id="mc_${j}"></div><div class="mk act" id="ma_${j}"></div>
+        <input type="range" id="in_${j}" min="${lo}" max="${hi}" step="${j === 'gripper' ? 0.05 : 1}"></div>
+      <span class="val" id="v_${j}">–</span>`;
+    box.appendChild(row);
+    const inp = $('in_' + j);
+    inp.addEventListener('change', () => act('/api/move', {angles: {[j]: +inp.value}}));
+  }
+}
+const pct = (j, a) => ((a - JR[j].lo) / (JR[j].hi - JR[j].lo) * 100).toFixed(2) + '%';
+function updateJoints() {
+  for (const j of JOINTS) {
+    const lim = S.calibration[j].limits, c = S.angles[j], a = (S.actual || S.live || {})[j];
+    const l = $('lim_' + j); l.style.left = pct(j, lim[0]); l.style.width = `calc(${pct(j, lim[1])} - ${pct(j, lim[0])})`;
+    if (j !== 'gripper') {
+      const m = Math.max(3, (lim[1] - lim[0]) * 0.04);
+      Object.assign($('wl_' + j).style, {left: pct(j, lim[0]), width: `calc(${pct(j, lim[0] + m)} - ${pct(j, lim[0])})`});
+      Object.assign($('wh_' + j).style, {left: pct(j, lim[1] - m), width: `calc(${pct(j, lim[1])} - ${pct(j, lim[1] - m)})`});
+    }
+    $('mc_' + j).style.display = c == null ? 'none' : ''; if (c != null) $('mc_' + j).style.left = pct(j, c);
+    $('ma_' + j).style.display = a == null ? 'none' : ''; if (a != null) $('ma_' + j).style.left = pct(j, a);
+    const inp = $('in_' + j); if (document.activeElement !== inp && c != null) inp.value = c;
+    const f = v => v == null ? '–' : (j === 'gripper' ? (v * 100).toFixed(0) + '%' : v.toFixed(1) + '°');
+    const pulse = S.pulses[j];
+    $('v_' + j).innerHTML = `${f(a ?? c)}<small>cmd ${f(c)}${pulse ? ' · ' + pulse + 'µs' : ''}</small>`;
+    $('v_' + j).style.color = nearLimit(j, c) ? css('--warn') : '';
+  }
+}
+$('b_rest').onclick = () => act('/api/rest', {});
+$('b_open').onclick = () => act('/api/move', {angles: {gripper: 1}, duration_ms: 400});
+$('b_close').onclick = () => act('/api/move', {angles: {gripper: 0}, duration_ms: 400});
+const DEMO = [
+  ['/api/move', {angles: {base: 0, shoulder: 90, elbow: 0, wrist: 0, gripper: 1}, duration_ms: 1500}, 1800],
+  ['/api/move_to', {xyz: [120, 0, 40], pitch: -90, duration_ms: 1200}, 1500],
+  ['/api/move', {angles: {gripper: 0}, duration_ms: 500}, 700],
+  ['/api/move_to', {xyz: [90, 80, 90], pitch: -90, duration_ms: 1200}, 1500],
+  ['/api/move', {angles: {gripper: 1}, duration_ms: 500}, 700],
+  ['/api/rest', {duration_ms: 1500}, 1600],
+];
+let demoOn = false;
+$('b_demo').onclick = async () => {
+  if (demoOn) return; demoOn = true; $('b_demo').className = 'on';
+  try { for (const [p, b, wait] of DEMO) { if (!(await act(p, b))) break; await new Promise(r => setTimeout(r, wait)); } }
+  finally { demoOn = false; $('b_demo').className = ''; }
+};
+for (const m of ['sim', 'i2c']) $('m_' + m).onclick = () => {
+  if (m === 'i2c' && !confirm('Switch to the REAL arm? Moves will drive the servos.')) return;
+  act('/api/backend', {name: m});
+};
+
+// ---------- plots ----------
+const PL = {};
+function buildPlots() {
+  for (const j of JOINTS) {
+    const row = document.createElement('div'); row.className = 'plot';
+    row.innerHTML = `<span class="name">${j}</span><canvas id="pc_${j}"></canvas><span class="err" id="pe_${j}">–</span>`;
+    $('plots').appendChild(row); PL[j] = $('pc_' + j);
+  }
+}
+function drawPlots() {
+  if (!H.length) return;
+  const tnow = H[H.length - 1].t, span = 10, hist = H.filter(s => tnow - s.t <= span);
+  for (const j of JOINTS) {
+    const c = PL[j], g = c.getContext('2d'), w = c.clientWidth, h = c.clientHeight;
+    c.width = w * DPR; c.height = h * DPR; g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const series = k => hist.map(s => [s.t, s[k]?.[j]]).filter(p => p[1] != null);
+    const cmd = series('cmd'), live = series('live'), act = series('actual');
+    const all = [...cmd, ...live, ...act].map(p => p[1]);
+    const lim = S?.calibration?.[j]?.limits;
+    if (!all.length) { g.fillStyle = css('--mute'); g.fillText('no data', 4, 14); $('pe_' + j).textContent = '–'; continue; }
+    let lo = Math.min(...all), hi = Math.max(...all); const pad = Math.max((hi - lo) * 0.15, j === 'gripper' ? 0.05 : 2);
+    lo -= pad; hi += pad;
+    const X = t => (t - (tnow - span)) / span * w, Y = v => h - 3 - (v - lo) / (hi - lo) * (h - 6);
+    g.strokeStyle = css('--grid'); g.lineWidth = 1;
+    for (let t = Math.ceil(tnow - span); t <= tnow; t++) { g.beginPath(); g.moveTo(X(t), 0); g.lineTo(X(t), h); g.stroke(); }
+    if (lim) for (const L of lim) if (L > lo && L < hi) {
+      g.strokeStyle = css('--warn'); g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, Y(L)); g.lineTo(w, Y(L)); g.stroke(); g.setLineDash([]); }
+    const path = (pts, color, lw, dash) => {
+      if (pts.length < 2) return; g.strokeStyle = color; g.lineWidth = lw; g.setLineDash(dash || []);
+      g.beginPath(); pts.forEach(([t, v], i) => i ? g.lineTo(X(t), Y(v)) : g.moveTo(X(t), Y(v))); g.stroke(); g.setLineDash([]); };
+    path(live, css('--live'), 1.5);
+    path(cmd, css('--cmd'), 1.5, [4, 3]);
+    path(act, css('--act'), 2);
+    g.fillStyle = css('--mute'); g.font = '10px system-ui';
+    g.fillText((j === 'gripper' ? hi.toFixed(2) : hi.toFixed(0) + '°'), 2, 10);
+    g.fillText((j === 'gripper' ? lo.toFixed(2) : lo.toFixed(0) + '°'), 2, h - 2);
+    // tracking error: actual vs the board's ramp (what the servo was told at that instant)
+    let err = null;
+    const ref = live.length ? live : cmd;
+    if (act.length && ref.length) {
+      const m = new Map(ref.map(([t, v]) => [t, v]));
+      err = Math.max(...act.map(([t, v]) => m.has(t) ? Math.abs(v - m.get(t)) : 0));
+    }
+    const e = $('pe_' + j);
+    e.textContent = err == null ? '–' : (j === 'gripper' ? (err * 100).toFixed(0) + '%' : err.toFixed(1) + '°');
+    e.className = 'err' + (err != null && err > (j === 'gripper' ? 0.1 : 3) ? ' hi' : '');
+  }
+}
+
+// ---------- log ----------
+function addLog(items) {
+  const box = $('log');
+  if (items.length && !logShown) box.innerHTML = '';
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+  for (const it of items) {
+    const d = document.createElement('div');
+    d.className = it.kind === 'error' ? 'error' : (it.warn ? 'warn' : '');
+    d.innerHTML = `<span class="t">${it.t.toFixed(1)}s</span><span class="k">${it.kind}</span><span></span>`;
+    d.lastChild.textContent = it.text;
+    box.appendChild(d); logShown++;
+  }
+  while (box.children.length > 300) box.removeChild(box.firstChild);
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+$('b_clear').onclick = () => { $('log').innerHTML = '<div class="empty" style="display:block">cleared</div>'; logShown = 0; };
+
+// ---------- polling ----------
+let busy = false;
+async function poll() {
+  if (busy) return; busy = true;
+  try {
+    S = await api('/api/state');
+    const h = await api('/api/history?since=' + lastHist);
+    if (h.items.length) { H.push(...h.items); lastHist = h.items[h.items.length - 1].t; }
+    if (h.t < lastHist) { H = []; lastHist = -1; }   // server restarted
+    H = H.filter(s => lastHist - s.t <= 12);
+    const lg = await api('/api/log?since=' + lastLog);
+    if (lg.items.length) { addLog(lg.items); lastLog = lg.items[lg.items.length - 1].t; }
+    if (lg.t < lastLog) lastLog = -1;
+    online = true; render();
+  } catch (e) { online = false; $('conn').className = 'dot off'; }
+  finally { busy = false; }
+}
+function render() {
+  $('conn').className = 'dot' + (online ? '' : ' off');
+  $('label').textContent = S.backend_label; $('label').className = 'pill' + (S.backend === 'i2c' ? ' real' : '');
+  for (const m of ['sim', 'i2c']) $('m_' + m).classList.toggle('on', S.backend === m);
+  $('time').textContent = S.t.toFixed(1) + 's';
+  const f = S.actual_fk || S.fk;
+  $('tip').textContent = f ? f.fingertip.map(v => v.toFixed(0)).join(', ') + ' mm' : '–';
+  $('pitch').textContent = f ? f.pitch_deg.toFixed(0) + '°' : '–';
+  const b = S.battery_mv;
+  $('battery').textContent = b == null ? 'n/a' : (b / 1000).toFixed(2) + ' V' + (S.battery_source !== 'board' ? ' (sim)' : '');
+  $('battery').style.color = b != null && S.battery_source === 'board' && b < 6800 ? css('--warn') : '';
+  updateJoints();
+}
+function frame() { draw(); drawPlots(); requestAnimationFrame(frame); }
+
+resize(); window.addEventListener('resize', resize);
+buildJoints(); buildPlots();
+poll(); setInterval(poll, 100);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

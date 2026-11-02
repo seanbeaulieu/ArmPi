@@ -186,6 +186,14 @@ def test_i2c_backend_bytes():
     assert bus.msgs == [(0x7A, [40, 1, 44, 1, 1, 96, 5])]
 
 
+
+def test_clamp_respects_board_pulse_range():
+    # wrist limit -90 with trim -39 would be 461us, below the board's 500us floor
+    a = CAL.clamp("wrist", -90)
+    assert protocol.PULSE_MIN <= CAL.to_pulse("wrist", a) <= protocol.PULSE_MAX
+    arm = Arm(SimBackend(), CAL)
+    arm.move({"wrist": -90}, 2000)  # must not raise
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

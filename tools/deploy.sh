@@ -8,7 +8,10 @@
 # The Pi's armpi/calibration.yaml is kept: calibration happens on the Pi, so bring it
 # back with tools/pull-calibration.sh and commit it.
 set -e
-PI=${PI:-seanbeaulieu_armpi@armpi.local}
+HOST=${ARMPI_HOST:-armpi.local}
+# WSL can't resolve .local names: fall back to the Pi's last known IP
+if ! getent hosts "$HOST" >/dev/null 2>&1 && [ -z "$ARMPI_HOST" ]; then HOST=10.0.0.133; fi
+PI=${PI:-seanbeaulieu_armpi@$HOST}
 cd "$(dirname "$0")/.."
 git ls-files -co --exclude-standard | tar -cf - -T - | ssh "$PI" '
   set -e
@@ -26,6 +29,9 @@ for arg in "$@"; do
   --test)
     ssh "$PI" 'cd ~/ArmPi && .venv/bin/python tests/test_armpi.py && .venv/bin/python tests/test_server.py' ;;
   --serve)  # (re)start the web panel as a systemd user service, http://armpi.local:8000
+    # linger = user services start at boot without a login (asks for the Pi password once)
+    ssh "$PI" 'loginctl show-user $USER -p Linger | grep -q yes' ||
+      ssh -t "$PI" 'sudo loginctl enable-linger $USER'
     ssh "$PI" 'mkdir -p ~/.config/systemd/user
       cp ~/ArmPi/tools/armpi-panel.service ~/.config/systemd/user/
       systemctl --user daemon-reload && systemctl --user enable -q armpi-panel

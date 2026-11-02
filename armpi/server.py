@@ -2,12 +2,18 @@
 
     python -m armpi.server            # simulator, http://armpi.local:8000
     python -m armpi.server --real     # start on the real arm
+    python -m armpi.server --sim mujoco   # physics sim (e.g. on the PC: http://localhost:8000/studio)
+    python -m armpi.server --sim mujoco --real-url http://armpi.local:8000
+        # on the PC: "Real arm" drives the Pi's arm through the Pi's server
 
 The panel switches between sim and real at runtime (POST /api/backend). Each keeps its own
 Arm, so switching back finds the pose where it was left; both share one Calibration.
 Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move the arm.
 
     GET  /                     web panel
+    GET  /studio               arm studio: 3D commanded-vs-actual, plots, log
+    GET  /api/history?since=t  sampled joint history (commanded, live ramp, actual physics)
+    GET  /api/log?since=t      command log
     GET  /api/state            angles (commanded + live), pulses, fk, battery, calibration
     GET  /api/battery          from the real board whenever it answers, even in sim mode
     POST /api/backend          {"name": "sim" | "i2c"}
@@ -17,9 +23,11 @@ Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move th
     POST /api/servo_pulses     {"pulses": {"6": 1500}, "duration_ms": 300}         used by RemoteBackend
     POST /api/rest             {"duration_ms": 1500}
     POST /api/calibrate        {"joint": "shoulder", "mark": "zero", "angle": 90}  see Calibrator
-    GET  /stream.mjpg, /snapshot.jpg
+    GET  /api/vision/blocks    colored blocks in the wrist cam -> table xyz (see armpi/vision.py)
+    GET  /stream.mjpg, /snapshot.jpg   (stream parts carry X-T: grab time on the /api/log clock)
 """
 import argparse
+import collections
 import json
 import math
 import threading
@@ -30,7 +38,7 @@ from pathlib import Path
 from .arm import Arm
 from .backends import make_backend
 from .calibration import JOINTS, Calibration
-from .kinematics import fk
+from .kinematics import LINKS, fk
 
 WEB = Path(__file__).with_name("web")
 
@@ -41,6 +49,7 @@ class Camera:
     def __init__(self, device=0, width=640, height=480, quality=80):
         self.device, self.size, self.quality = device, (width, height), quality
         self.jpeg = None
+        self.stamp = None  # time.monotonic() when self.jpeg was grabbed
         self.error = None
         self.cond = threading.Condition()
         self.thread = None
@@ -63,12 +72,14 @@ class Camera:
             return
         while True:
             ok, frame = cap.read()
+            grabbed = time.monotonic()
             if not ok:
                 time.sleep(0.1)
                 continue
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
             with self.cond:
                 self.jpeg = buf.tobytes()
+                self.stamp = grabbed
                 self.cond.notify_all()
 
     def frame(self, timeout=5.0, after=None):
@@ -125,8 +136,19 @@ class Calibrator:
 class App:
     BATTERY_EVERY_S = 3.0  # the I2C bus is slow and flaky; don't read it on every refresh
 
-    def __init__(self, calib, camera, backend="sim", make_backend=make_backend):
+    SAMPLE_HZ = 20
+    HISTORY_S = 30
+
+    def __init__(self, calib, camera, backend="sim", make_backend=make_backend, sim_kind="sim",
+                 sample=False, real_url=None):
+        """sim_kind: what 'sim' means, 'sim' (kinematic) or 'mujoco' (physics).
+        sample=True starts a thread that steps physics and records history at SAMPLE_HZ."""
         self.calib, self.camera, self.make_backend = calib, camera, make_backend
+        self.sim_kind = sim_kind
+        self.real_url = real_url  # None: real arm = local I2C board; URL: another armpi.server
+        self.t0 = time.monotonic()
+        self.history = collections.deque(maxlen=self.SAMPLE_HZ * self.HISTORY_S)
+        self.log = collections.deque(maxlen=200)
         self.lock = threading.Lock()
         self.arms = {}  # backend name -> Arm, created on first use
         self.board = None  # I2C backend, shared by the real Arm and the battery readout
@@ -135,11 +157,50 @@ class App:
         self.calibrator = Calibrator(None)
         self.servo_to_joint = {calib.servo(j): j for j in JOINTS}
         self.use(backend)
+        if sample:
+            threading.Thread(target=self._sampler, daemon=True).start()
+
+    # --- time, history, log ---
+    def now(self):
+        return round(time.monotonic() - self.t0, 3)
+
+    def event(self, kind, text, **extra):
+        self.log.append({"t": self.now(), "kind": kind, "text": text, **extra})
+
+    def _sync(self):
+        sync = getattr(self.arm.backend, "sync", None)
+        if sync:
+            sync()
+
+    def sample(self):
+        """Record one history point. Caller holds self.lock."""
+        self._sync()
+        cmd = self.arm.angles
+        self.history.append({"t": self.now(), "cmd": cmd, "live": self._live_angles(cmd),
+                             "actual": self._actual_angles()})
+
+    def _sampler(self):
+        period = 1.0 / self.SAMPLE_HZ
+        while True:
+            with self.lock:
+                try:
+                    self.sample()
+                except Exception as e:  # never let the sampler die silently
+                    self.event("error", f"sampler: {type(e).__name__}: {e}")
+            time.sleep(period)
+
+    def since(self, buf, t):
+        return [x for x in list(buf) if x["t"] > t]
 
     def _board(self):
         if self.board is None:
             try:
-                self.board = self.make_backend("i2c")
+                if self.real_url:
+                    board = self.make_backend(self.real_url)
+                    board.select("i2c")  # the remote server must drive its real arm, not its sim
+                    self.board = board
+                else:
+                    self.board = self.make_backend("i2c")
                 self.board_error = None
             except Exception as e:  # no smbus2, no /dev/i2c-1, ...
                 self.board_error = f"{type(e).__name__}: {e}"
@@ -155,21 +216,37 @@ class App:
                     raise OSError(f"cannot open the board: {self.board_error}")
                 backend = self.board
             else:
-                backend = self.make_backend("sim")
+                backend = self.make_backend(self.sim_kind)
             self.arms[name] = Arm(backend, self.calib)
         self.backend_name, self.arm = name, self.arms[name]
         self.calibrator.arm = self.arm
+        self.event("backend", f"backend -> {self.label()}")
+
+    def label(self):
+        if self.backend_name == "i2c":
+            return f"real arm via {self.real_url}" if self.real_url else "real arm"
+        return (
+            "mujoco sim" if self.sim_kind == "mujoco" else "kinematic sim")
 
     def state(self):
         with self.lock:
+            self._sync()
             commanded = self.arm.angles
             pulses = dict(self.arm.pulses)
             live = self._live_angles(commanded)
+            actual = self._actual_angles()
             battery, source = self._battery()
-        return {"backend": self.backend_name, "angles": commanded, "live": live, "pulses": pulses,
-                "fk": _fk(live), "target_fk": _fk(commanded),
+        return {"backend": self.backend_name, "backend_label": self.label(), "sim_kind": self.sim_kind,
+                "t": self.now(), "angles": commanded, "live": live, "actual": actual,
+                "pulses": pulses, "fk": _fk(live), "target_fk": _fk(commanded),
+                "actual_fk": _fk(actual) if actual else None,
                 "battery_mv": battery, "battery_source": source, "board_error": self.board_error,
-                "joints": JOINTS, "calibration": self.calib.joints}
+                "joints": JOINTS, "calibration": self.calib.joints, "links": LINKS}
+
+    def _actual_angles(self):
+        """Physics sim only: where the joints really are (sag, lag, torque limits)."""
+        ja = getattr(self.arm.backend, "joint_angles", None)
+        return {j: float(a) for j, a in ja().items()} if ja else None
 
     def _live_angles(self, commanded):
         """The sim knows where each servo is mid-move; the real arm can't tell us."""
@@ -187,8 +264,11 @@ class App:
         if time.monotonic() - t < self.BATTERY_EVERY_S:
             return mv, source
         mv, source = None, None
+        # a remote real arm is only contacted once selected (don't flip its server, or block
+        # on a Pi that's off, just to show a voltage)
+        local_board = self.real_url is None or self.backend_name == "i2c"
         try:
-            if self._board() is not None:
+            if local_board and self._board() is not None:
                 mv, source = self.board.battery_mv(), "board"
             else:
                 mv, source = self.arm.battery_mv(), self.backend_name
@@ -198,28 +278,82 @@ class App:
         return mv, source
 
     def post(self, path, body):
-        d = body.get("duration_ms")
         with self.lock:
-            if path == "/api/backend":
-                self.use(body["name"])
-                return {"backend": self.backend_name}
-            if path == "/api/move":
-                angles, ms = self.arm.move({k: float(v) for k, v in body["angles"].items()}, d)
-                return {"angles": angles, "duration_ms": ms}
-            if path == "/api/move_to":
-                pitch = self.arm.move_to(tuple(body["xyz"]), body.get("pitch", -90), d)
-                return {"pitch": pitch, "angles": self.arm.angles}
-            if path == "/api/pulse":
-                return {"duration_ms": self.arm.move_pulse(body["joint"], int(body["us"]), d)}
-            if path == "/api/servo_pulses":
-                pulses = {self.servo_to_joint[int(s)]: int(us) for s, us in body["pulses"].items()}
-                return {"duration_ms": self.arm.send_pulses(pulses, d)}
-            if path == "/api/rest":
-                angles, ms = self.arm.rest(d)
-                return {"angles": angles, "duration_ms": ms}
-            if path == "/api/calibrate":
-                return self.calibrator.mark(body["joint"], body["mark"], body.get("angle"))
+            self._sync()
+            t = self.now()
+            try:
+                out = self._post(path, body)
+            except Exception as e:
+                self.event("error", f"{path}: {e}")
+                raise
+            self._log_post(path, body, out)
+            out.setdefault("t", t)  # server clock when the command went to the backend
+            return out
+
+    def _log_post(self, path, body, out):
+        ms = out.get("duration_ms")
+        if path == "/api/move":
+            req = {k: float(v) for k, v in body["angles"].items()}
+            got = out["angles"]
+            clamped = [f"{j} {req[j]:g}->{got[j]:g}" for j in req if abs(req[j] - got[j]) > 1e-6]
+            txt = ", ".join(f"{j}={got[j]:.0f}" for j in got) + f" in {ms}ms"
+            self.event("move", txt + (f" (clamped: {'; '.join(clamped)})" if clamped else ""),
+                       warn=bool(clamped))
+        elif path == "/api/move_to":
+            x, y, z = body["xyz"]
+            want, used = body.get("pitch", -90), out.get("pitch")
+            note = f", pitch {want:g}->{used:g}" if abs(used - want) > 1e-6 else ""
+            self.event("move_to", f"reach ({x:.0f}, {y:.0f}, {z:.0f}){note}", warn=bool(note))
+        elif path == "/api/rest":
+            self.event("move", f"rest in {ms}ms")
+        elif path == "/api/pulse":
+            self.event("pulse", f"{body['joint']} -> {body['us']}us")
+        elif path == "/api/calibrate":
+            self.event("calibrate", f"{body['joint']}: mark {body['mark']}")
+
+    def _post(self, path, body):
+        d = body.get("duration_ms")
+        if path == "/api/backend":
+            self.use(body["name"])
+            return {"backend": self.backend_name}
+        if path == "/api/move":
+            angles, ms = self.arm.move({k: float(v) for k, v in body["angles"].items()}, d)
+            return {"angles": angles, "duration_ms": ms}
+        if path == "/api/move_to":
+            pitch = self.arm.move_to(tuple(body["xyz"]), body.get("pitch", -90), d)
+            return {"pitch": pitch, "angles": self.arm.angles}
+        if path == "/api/pulse":
+            return {"duration_ms": self.arm.move_pulse(body["joint"], int(body["us"]), d)}
+        if path == "/api/servo_pulses":
+            pulses = {self.servo_to_joint[int(s)]: int(us) for s, us in body["pulses"].items()}
+            return {"duration_ms": self.arm.send_pulses(pulses, d)}
+        if path == "/api/rest":
+            angles, ms = self.arm.rest(d)
+            return {"angles": angles, "duration_ms": ms}
+        if path == "/api/calibrate":
+            return self.calibrator.mark(body["joint"], body["mark"], body.get("angle"))
         raise KeyError(path)
+
+
+def vision_blocks(app):
+    """Blocks seen by the camera right now, with base-frame xyz from the commanded pose."""
+    try:
+        import cv2
+        import numpy as np
+        from . import vision
+    except ImportError as e:
+        return 503, {"error": f"vision needs numpy + opencv: {e}"}
+    jpg = app.camera.frame()
+    if jpg is None:
+        return 503, {"error": app.camera.error or "no camera frame"}
+    with app.lock:
+        angles = dict(app.arm.angles)
+    if not all(j in angles for j in ("base", "shoulder", "elbow", "wrist")):
+        return 409, {"error": "arm pose unknown: move the arm first"}
+    cam = vision.Camera.load()
+    img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+    return 200, {"blocks": vision.locate_blocks(img, angles, cam), "angles": angles,
+                 "camera_guess": [k for k, v in cam.guess.items() if v], "size": [img.shape[1], img.shape[0]]}
 
 
 def _fk(angles):
@@ -249,12 +383,22 @@ def make_handler(app):
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
                 return self._send(200, (WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if path == "/studio":
+                return self._send(200, (WEB / "studio.html").read_bytes(), "text/html; charset=utf-8")
+            if path in ("/api/history", "/api/log"):
+                q = dict(kv.split("=", 1) for kv in self.path.partition("?")[2].split("&") if "=" in kv)
+                since = float(q.get("since", -1))
+                with app.lock:
+                    buf = app.history if path == "/api/history" else app.log
+                    return self._send(200, {"t": app.now(), "items": app.since(buf, since)})
             if path == "/api/state":
                 return self._send(200, app.state())
             if path == "/api/battery":
                 with app.lock:
                     mv, source = app._battery()
                 return self._send(200, {"battery_mv": mv, "source": source})
+            if path == "/api/vision/blocks":
+                return self._send(*vision_blocks(app))
             if path == "/snapshot.jpg":
                 jpg = app.camera.frame()
                 return self._send(200, jpg, "image/jpeg") if jpg else self._send(503, {"error": app.camera.error})
@@ -276,8 +420,13 @@ def make_handler(app):
                     if jpg is None:
                         return
                     if jpg is not last:
-                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                                         + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                        # X-T: grab time on the server clock (same as "t" in /api/move replies
+                        # and /api/log), so tools can line frames up with commands
+                        stamp = getattr(app.camera, "stamp", None)
+                        t = b"" if stamp is None else b"X-T: %.4f\r\n" % (stamp - app.t0)
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n" + t
+                                         + b"Content-Length: " + str(len(jpg)).encode()
+                                         + b"\r\n\r\n" + jpg + b"\r\n")
                     last = jpg
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -310,11 +459,22 @@ def main(argv=None):
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--camera", type=int, default=0, help="/dev/videoN")
+    p.add_argument("--sim", default="sim", choices=["sim", "mujoco"],
+                   help="what the sim backend is: kinematic ('sim') or physics ('mujoco')")
+    p.add_argument("--real-url", help="drive the real arm through another armpi.server "
+                   "(e.g. http://armpi.local:8000) instead of a local I2C board")
     a = p.parse_args(argv)
-    app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim")
+    if a.sim == "mujoco":
+        try:
+            import mujoco  # noqa: F401
+        except ImportError:
+            p.error("--sim mujoco needs MuJoCo: activate your venv (source .venv/bin/activate) "
+                    "and pip install mujoco")
+    app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim",
+              sim_kind=a.sim, sample=True, real_url=a.real_url)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(app))
     srv.daemon_threads = True
-    print(f"armpi server ({app.backend_name}) on http://{a.host}:{a.port}", flush=True)
+    print(f"armpi server ({app.label()}) on http://{a.host}:{a.port}", flush=True)
     srv.serve_forever()
 
 
