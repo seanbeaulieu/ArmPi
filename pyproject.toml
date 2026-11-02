@@ -12,6 +12,7 @@ dependencies = ["pyyaml"]
 [project.optional-dependencies]
 hw = ["smbus2"]
 dev = ["pytest"]
+sim = ["mujoco"]
 
 [project.scripts]
 armpi = "armpi.__main__:main"
