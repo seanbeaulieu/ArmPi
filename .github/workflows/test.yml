@@ -10,5 +10,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"   # matches Pi OS trixie
-      - run: pip install pyyaml numpy pytest mujoco
+      - run: pip install pyyaml numpy pytest mujoco scipy opencv-python-headless
       - run: python -m pytest -q
