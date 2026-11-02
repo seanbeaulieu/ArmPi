@@ -61,6 +61,22 @@ tools/deploy.sh --test    # copy the working tree to ~/ArmPi on the Pi, install,
 
 Tests need no hardware: `python tests/test_armpi.py` (or pytest).
 
+## Arm Studio (GUI)
+
+`python -m armpi.server --sim mujoco` then open http://localhost:8000/studio (on the Pi:
+http://armpi.local:8000/studio; `--sim mujoco` needs `pip install mujoco`, otherwise the plain
+kinematic sim is used). One page shows:
+
+- 3D view: actual pose (physics) solid, commanded target dashed, 5 s fingertip trail, reach
+  envelope, joints turning orange near their calibration limits. Drag to orbit, wheel to zoom,
+  shift-drag to pan. "click-to-reach" + click on the table sends a move_to at the given height.
+- Joints: calibration limit bars with commanded and actual markers; drag a bar to move a joint.
+- Joint tracking: last 10 s of commanded / board ramp / actual per joint, with max tracking error.
+  This is the sim2real gap made visible: once gains/masses are tuned, it should match the arm.
+- Event log: every command, clamps and pitch substitutions in orange, errors in bold.
+
+Backed by `GET /api/history?since=t` (20 Hz samples) and `GET /api/log?since=t`.
+
 ## MuJoCo
 
 `pip install mujoco` (CPU is fine). Same Arm code, physics underneath:
