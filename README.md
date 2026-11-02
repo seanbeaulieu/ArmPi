@@ -61,6 +61,19 @@ tools/deploy.sh --test    # copy the working tree to ~/ArmPi on the Pi, install,
 
 Tests need no hardware: `python tests/test_armpi.py` (or pytest).
 
+## Quick start
+
+Once, from the PC (WSL/Git Bash, in this repo):
+
+    tools/deploy.sh --serve     # copy to the Pi, install, run its server at boot from now on
+
+Every time:
+
+    tools/studio.sh             # PC: http://localhost:8001/studio, Ctrl+C to stop
+
+Pi off? Studio still runs with the MuJoCo sim only. After code changes: `git pull` and
+`tools/deploy.sh --serve` again.
+
 ## Arm Studio (GUI)
 
 `python -m armpi.server --sim mujoco` then open http://localhost:8000/studio (on the Pi:
