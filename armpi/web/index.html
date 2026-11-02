@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArmPi Control</title>
+<style>
+  :root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --mute:#6b6b66; --line:#deded8;
+          --accent:#2f6fde; --warn:#c2410c; --arm:#1d1d1b; --ghost:#b9b9b2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151514; --panel:#1f1f1d; --ink:#ececea; --mute:#9a9a94; --line:#33332f;
+            --accent:#6c9cf0; --warn:#f08a4b; --arm:#ececea; --ghost:#55554f; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui, sans-serif; }
+  header { display:flex; gap:16px; align-items:baseline; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .tag { color:var(--mute); }
+  .tag b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .low { color:var(--warn) !important; }
+  main { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; padding:16px; max-width:1200px; margin:auto; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); margin:0 0 10px; }
+  img.cam { width:100%; aspect-ratio:4/3; background:#000; border-radius:4px; display:block; object-fit:contain; }
+  canvas { width:100%; height:240px; display:block; }
+  .row { display:grid; grid-template-columns:72px 1fr 64px; gap:8px; align-items:center; margin:6px 0; }
+  .row output { text-align:right; font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  input[type=number], select { width:100%; padding:5px 6px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--ink); font:inherit; }
+  button { padding:6px 10px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--ink); font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+  .bar label { color:var(--mute); }
+  .xyz { display:grid; grid-template-columns:repeat(4,1fr) auto; gap:6px; align-items:end; }
+  .xyz label { font-size:12px; color:var(--mute); }
+  #msg { min-height:1.4em; color:var(--mute); margin-top:8px; }
+  #msg.err { color:var(--warn); }
+  .mono { font-family:ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; }
+  .seg button.on { background:var(--accent); color:#fff; }
+  .seg button.on.real { background:var(--warn); }
+  #view { height:320px; cursor:grab; touch-action:none; }
+  .hint { color:var(--mute); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ArmPi</h1>
+  <span class="seg"><button id="m_sim" data-mode="sim">Sim</button><button id="m_i2c" data-mode="i2c">Real arm</button></span>
+  <span class="tag">battery <b id="battery">…</b></span>
+</header>
+<main>
+  <section>
+    <h2>Camera</h2>
+    <img class="cam" id="cam" alt="camera stream">
+    <h2 style="margin-top:14px">Pose</h2>
+    <canvas id="view"></canvas>
+    <div class="hint">drag to orbit · double-click to reset · grey = commanded target</div>
+  </section>
+
+  <section>
+    <h2>Joints</h2>
+    <div id="sliders"></div>
+    <div class="bar">
+      <label>duration ms</label><input type="number" id="dur" value="600" min="0" step="100" style="width:90px">
+      <button id="rest">Rest pose</button>
+      <button data-grip="1">Open gripper</button><button data-grip="0">Close gripper</button>
+    </div>
+
+    <h2 style="margin-top:18px">Fingertip target (mm)</h2>
+    <div class="xyz">
+      <div><label>x</label><input type="number" id="tx" value="100"></div>
+      <div><label>y</label><input type="number" id="ty" value="0"></div>
+      <div><label>z</label><input type="number" id="tz" value="40"></div>
+      <div><label>pitch</label><input type="number" id="tp" value="-90"></div>
+      <button class="primary" id="go">Go</button>
+    </div>
+
+    <h2 style="margin-top:18px">Calibrate</h2>
+    <div class="bar">
+      <select id="cj" style="width:110px"></select>
+      <span class="mono" id="cpulse">—</span>
+    </div>
+    <div class="bar">
+      <button data-jog="-50">−50</button><button data-jog="-10">−10</button>
+      <button data-jog="10">+10</button><button data-jog="50">+50</button>
+      <label>µs per step, 300 ms each</label>
+    </div>
+    <div class="bar" id="marks"></div>
+    <div id="msg"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let S = null;           // last /api/state
+let dragging = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function say(text, err) { $('msg').textContent = text; $('msg').className = err ? 'err' : ''; }
+const dur = () => Number($('dur').value) || 0;
+
+function buildSliders() {
+  const box = $('sliders'); box.innerHTML = '';
+  for (const j of S.joints) {
+    const c = S.calibration[j], [lo, hi] = c.limits, step = j === 'gripper' ? 0.05 : 1;
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = `<label>${j}</label><input type="range" min="${lo}" max="${hi}" step="${step}" id="s_${j}"><output id="o_${j}"></output>`;
+    box.appendChild(row);
+    const s = row.querySelector('input');
+    s.value = S.angles[j] ?? c.rest;
+    $('o_' + j).textContent = Number(s.value).toFixed(j === 'gripper' ? 2 : 0);
+    s.oninput = () => { dragging = true; $('o_' + j).textContent = Number(s.value).toFixed(j === 'gripper' ? 2 : 0); };
+    s.onchange = async () => {
+      dragging = false;
+      try { const r = await api('/api/move', {angles: {[j]: Number(s.value)}, duration_ms: dur()});
+            say(`${j} → ${Number(r.angles[j]).toFixed(1)} in ${r.duration_ms} ms`); }
+      catch (e) { say(e.message, true); }
+      refresh();
+    };
+  }
+  const sel = $('cj'); sel.innerHTML = S.joints.map(j => `<option>${j}</option>`).join('');
+  sel.onchange = showMarks; showMarks();
+}
+
+function showMarks() {
+  const j = $('cj').value;
+  const marks = j === 'gripper' ? ['closed', 'open', 'rest'] : ['zero', 'min', 'max', 'rest', 'flip'];
+  $('marks').innerHTML = marks.map(m => `<button data-mark="${m}">mark ${m}</button>`).join('') +
+    (j === 'gripper' ? '' : `<label>zero angle</label><input type="number" id="zangle" style="width:70px" value="${S.calibration[j].zero_angle}">`);
+  updateCal();
+}
+
+function updateCal() {
+  const j = $('cj').value, us = S.pulses[j];
+  $('cpulse').textContent = us === undefined ? 'position unknown: jog or move it first'
+    : `${us} µs  ≈ ${Number(S.angles[j]).toFixed(1)}${j === 'gripper' ? '' : '°'}`;
+}
+
+document.addEventListener('click', async e => {
+  const t = e.target;
+  try {
+    if (t.dataset.jog) {
+      const j = $('cj').value, base = S.pulses[j] ?? null;
+      if (base === null) { say('position unknown: use the slider or rest pose first', true); return; }
+      const us = base + Number(t.dataset.jog);
+      const r = await api('/api/pulse', {joint: j, us, duration_ms: 300});
+      say(`${j} → ${us} µs (${r.duration_ms} ms)`);
+    } else if (t.dataset.mark) {
+      const j = $('cj').value, body = {joint: j, mark: t.dataset.mark};
+      if (t.dataset.mark === 'zero') body.angle = Number($('zangle').value);
+      await api('/api/calibrate', body);
+      say(`saved ${t.dataset.mark} for ${j} to calibration.yaml`);
+      await refresh(); buildSliders();
+    } else if (t.dataset.grip) {
+      const r = await api('/api/move', {angles: {gripper: Number(t.dataset.grip)}, duration_ms: dur()});
+      say(`gripper ${t.dataset.grip === '1' ? 'open' : 'closed'} in ${r.duration_ms} ms`);
+    } else if (t.dataset.mode) {
+      const m = t.dataset.mode;
+      if (m === S.backend) return;
+      if (m === 'i2c' && !confirm('Switch to the REAL arm? Sliders and buttons will move the servos. ' +
+                                  'The first move takes ' + '1.5 s because its pose is unknown.')) return;
+      await api('/api/backend', {name: m});
+      say(m === 'i2c' ? 'real arm: commands now move the servos' : 'simulator: nothing moves');
+      await refresh(); buildSliders();
+    } else return;
+  } catch (err) { say(err.message, true); }
+  refresh();
+});
+
+$('rest').onclick = async () => {
+  try { const r = await api('/api/rest', {duration_ms: 1500}); say(`rest pose in ${r.duration_ms} ms`); }
+  catch (e) { say(e.message, true); }
+  refresh();
+};
+$('go').onclick = async () => {
+  try {
+    const r = await api('/api/move_to', {xyz: ['tx', 'ty', 'tz'].map(i => Number($(i).value)),
+                                         pitch: Number($('tp').value), duration_ms: dur()});
+    say(`reached with pitch ${r.pitch.toFixed(0)}°`);
+  } catch (e) { say(e.message, true); }
+  refresh();
+};
+
+// 3D view: orthographic camera orbiting the base. World: x forward, y left, z up (mm).
+const VIEW0 = {az: -0.6, el: 0.35};
+let view = {...VIEW0};
+function draw() {
+  const cv = $('view'), dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const ink = css.getPropertyValue('--arm'), ghost = css.getPropertyValue('--ghost'),
+        acc = css.getPropertyValue('--accent'), line = css.getPropertyValue('--line');
+  const ca = Math.cos(view.az), sa = Math.sin(view.az), ce = Math.cos(view.el), se = Math.sin(view.el);
+  const k = Math.min(w, h) / 330, cx = w / 2, cy = h * 0.72;
+  const P = ([x, y, z]) => [cx + (x * ca + y * sa) * k,
+                            cy - ((-x * sa + y * ca) * se + (z - 60) * ce) * k];
+  const poly = (pts, color, width, dash) => {
+    g.strokeStyle = color; g.lineWidth = width; g.lineCap = g.lineJoin = 'round'; g.setLineDash(dash || []);
+    g.beginPath(); pts.forEach((p, i) => { const [u, v] = P(p); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
+    g.setLineDash([]);
+  };
+  const dot = (p, r, color) => { const [u, v] = P(p); g.fillStyle = color; g.beginPath(); g.arc(u, v, r, 0, 7); g.fill(); };
+  // table grid, 50 mm
+  for (let i = -150; i <= 250; i += 50) poly([[i, -200, 0], [i, 200, 0]], line, 1);
+  for (let j = -200; j <= 200; j += 50) poly([[-150, j, 0], [250, j, 0]], line, 1);
+  poly([[0, 0, 0], [60, 0, 0]], acc, 2); poly([[0, 0, 0], [0, 60, 0]], ghost, 2);
+  const [xu, xv] = P([70, 0, 0]), [yu, yv] = P([0, 70, 0]);
+  g.fillStyle = ghost; g.font = '11px system-ui'; g.fillText('x', xu, xv); g.fillText('y', yu, yv);
+  // base: a 45 mm radius cylinder up to the turntable
+  const ring = z => Array.from({length: 33}, (_, i) => [45 * Math.cos(i * Math.PI / 16), 45 * Math.sin(i * Math.PI / 16), z]);
+  poly(ring(0), ghost, 1.5); poly(ring(68), ghost, 1.5);
+  for (const a of [view.az + Math.PI / 2, view.az - Math.PI / 2])
+    poly([[45 * Math.cos(a), 45 * Math.sin(a), 0], [45 * Math.cos(a), 45 * Math.sin(a), 68]], ghost, 1.5);
+  // go-to target from the inputs
+  const tgt = ['tx', 'ty', 'tz'].map(i => Number($(i).value));
+  poly([[tgt[0], tgt[1], 0], tgt], acc, 1, [3, 4]);
+  for (const d of [[8, 0, 0], [0, 8, 0], [0, 0, 8]])
+    poly([[tgt[0] - d[0], tgt[1] - d[1], tgt[2] - d[2]], [tgt[0] + d[0], tgt[1] + d[1], tgt[2] + d[2]]], acc, 1.5);
+  if (!S || !S.fk) {
+    g.fillStyle = ghost; g.fillText('pose unknown until the arm is moved (try Rest pose)', 12, 20); return;
+  }
+  const chain = ['turntable', 'shoulder', 'elbow', 'wrist', 'gripper_base'];
+  const arm = (fkp, angles, color, width) => {
+    poly(chain.map(n => fkp[n]), color, width);
+    // fingers open sideways, across the arm's vertical plane
+    const yaw = (angles.base || 0) * Math.PI / 180, o = 5 + 15 * (angles.gripper ?? 0);
+    const n = [-Math.sin(yaw) * o, Math.cos(yaw) * o, 0], b = fkp.gripper_base, t = fkp.fingertip;
+    for (const s of [1, -1]) poly([[b[0] + s * n[0] / 2, b[1] + s * n[1] / 2, b[2]],
+                                   [t[0] + s * n[0], t[1] + s * n[1], t[2]]], color, width * 0.6);
+  };
+  const moving = S.target_fk && S.target_fk.fingertip.some((v, i) => Math.abs(v - S.fk.fingertip[i]) > 1);
+  if (moving) arm(S.target_fk, S.angles, ghost, 2);
+  const tip = S.fk.fingertip;
+  poly([[tip[0], tip[1], 0], tip], ghost, 1, [2, 3]);  // drop line to the table
+  dot([tip[0], tip[1], 0], 2.5, ghost);
+  arm(S.fk, S.live, ink, 5);
+  for (const n of ['shoulder', 'elbow', 'wrist']) dot(S.fk[n], 4, acc);
+  g.fillStyle = ghost; g.font = '12px system-ui';
+  g.fillText(`tip ${tip.map(v => v.toFixed(0)).join(', ')} mm · pitch ${S.fk.pitch_deg.toFixed(0)}°`, 8, h - 6);
+}
+
+{ // orbit with mouse / touch
+  const cv = $('view'); let last = null;
+  cv.onpointerdown = e => { last = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; };
+  cv.onpointermove = e => {
+    if (!last) return;
+    view.az -= (e.clientX - last[0]) * 0.01;
+    view.el = Math.min(1.5, Math.max(-0.2, view.el + (e.clientY - last[1]) * 0.01));
+    last = [e.clientX, e.clientY]; draw();
+  };
+  cv.onpointerup = cv.onpointercancel = () => { last = null; cv.style.cursor = ''; };
+  cv.ondblclick = () => { view = {...VIEW0}; draw(); };
+  for (const i of ['tx', 'ty', 'tz']) $(i).oninput = draw;
+}
+
+async function refresh() {
+  try { S = await api('/api/state'); } catch (e) { say('server unreachable', true); return; }
+  for (const m of ['sim', 'i2c']) $('m_' + m).className = S.backend === m ? 'on' + (m === 'i2c' ? ' real' : '') : '';
+  const b = S.battery_mv;
+  $('battery').textContent = b == null ? 'n/a' : (b / 1000).toFixed(2) + ' V' + (S.battery_source === 'sim' ? ' (sim)' : '');
+  $('battery').title = S.board_error ? 'board: ' + S.board_error : '';
+  $('battery').className = b != null && b < 6800 ? 'low' : '';
+  if (!dragging) for (const j of S.joints) {
+    const s = $('s_' + j);
+    if (s && S.angles[j] !== undefined) { s.value = S.angles[j]; $('o_' + j).textContent = Number(S.angles[j]).toFixed(j === 'gripper' ? 2 : 0); }
+  }
+  updateCal(); draw();
+}
+
+(async () => {
+  await refresh(); if (!S) return;
+  buildSliders();
+  $('cam').src = '/stream.mjpg';
+  $('cam').onerror = () => { $('cam').removeAttribute('src'); $('cam').alt = 'no camera (see server log)'; };
+  setInterval(refresh, 250);  // fast enough to watch the sim move
+  addEventListener('resize', draw);
+})();
+</script>
+</body>
+</html>

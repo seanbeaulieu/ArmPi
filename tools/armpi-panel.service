@@ -1,0 +1,13 @@
+# systemd user unit for the web panel (sim by default). Installed by tools/deploy.sh --serve.
+# Starts at boot only with lingering on: sudo loginctl enable-linger $USER
+[Unit]
+Description=ArmPi web panel on :8000
+
+[Service]
+WorkingDirectory=%h/ArmPi
+ExecStart=%h/ArmPi/.venv/bin/python -m armpi.server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

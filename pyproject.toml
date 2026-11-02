@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "armpi"
+version = "0.1.0"
+description = "Our own control stack for the Hiwonder ArmPi Mini"
+requires-python = ">=3.9"
+dependencies = ["pyyaml"]
+
+[project.optional-dependencies]
+hw = ["smbus2"]
+dev = ["pytest"]
+
+[project.scripts]
+armpi = "armpi.__main__:main"
+
+[tool.setuptools]
+packages = ["armpi", "armpi.backends"]
+
+[tool.setuptools.package-data]
+armpi = ["calibration.yaml", "web/*.html"]
