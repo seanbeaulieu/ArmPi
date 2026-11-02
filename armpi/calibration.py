@@ -47,8 +47,11 @@ class Calibration:
         return {j: self.joints[j]["rest"] for j in JOINTS}
 
     def clamp(self, joint, angle):
+        """Clamp to the joint limits AND to what the board accepts (500..2500us after trim)."""
         lo, hi = self.limits(joint)
-        return min(max(angle, lo), hi)
+        from .protocol import PULSE_MAX, PULSE_MIN
+        a, b = sorted((self.to_angle(joint, PULSE_MIN), self.to_angle(joint, PULSE_MAX)))
+        return min(max(angle, lo, a), hi, b)
 
     def to_pulse(self, joint, angle):
         """Angle (deg, or 0..1 for the gripper) -> pulse in us, trim included."""
