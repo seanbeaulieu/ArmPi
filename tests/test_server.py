@@ -139,6 +139,27 @@ def test_web_panel_served():
     assert b"<title>ArmPi Control</title>" in get("/")
 
 
+
+def test_studio_served():
+    assert b"<title>Arm Studio</title>" in get("/studio")
+
+
+def test_history_and_log():
+    APP.sample()  # the test server runs without the sampler thread
+    post("/api/move", {"angles": {"base": 12}, "duration_ms": 300})
+    APP.sample()
+    h = json.loads(get("/api/history?since=-1"))
+    assert h["items"] and abs(h["items"][-1]["cmd"]["base"] - 12) < 0.1
+    newest = h["items"][-1]["t"]
+    assert json.loads(get(f"/api/history?since={newest}"))["items"] == []
+    log = json.loads(get("/api/log?since=-1"))["items"]
+    assert any(e["kind"] == "move" and "base=12" in e["text"] for e in log)
+    post("/api/move", {"angles": {"base": 500}})  # clamped -> logged as a warning
+    assert json.loads(get("/api/log?since=-1"))["items"][-1]["warn"]
+    post("/api/move_to", {"xyz": [900, 0, 0]})   # unreachable -> logged as an error
+    assert json.loads(get("/api/log?since=-1"))["items"][-1]["kind"] == "error"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

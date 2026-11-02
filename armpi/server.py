@@ -2,12 +2,16 @@
 
     python -m armpi.server            # simulator, http://armpi.local:8000
     python -m armpi.server --real     # start on the real arm
+    python -m armpi.server --sim mujoco   # physics sim (e.g. on the PC: http://localhost:8000/studio)
 
 The panel switches between sim and real at runtime (POST /api/backend). Each keeps its own
 Arm, so switching back finds the pose where it was left; both share one Calibration.
 Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move the arm.
 
     GET  /                     web panel
+    GET  /studio               arm studio: 3D commanded-vs-actual, plots, log
+    GET  /api/history?since=t  sampled joint history (commanded, live ramp, actual physics)
+    GET  /api/log?since=t      command log
     GET  /api/state            angles (commanded + live), pulses, fk, battery, calibration
     GET  /api/battery          from the real board whenever it answers, even in sim mode
     POST /api/backend          {"name": "sim" | "i2c"}
@@ -20,6 +24,7 @@ Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move th
     GET  /stream.mjpg, /snapshot.jpg
 """
 import argparse
+import collections
 import json
 import math
 import threading
@@ -30,7 +35,7 @@ from pathlib import Path
 from .arm import Arm
 from .backends import make_backend
 from .calibration import JOINTS, Calibration
-from .kinematics import fk
+from .kinematics import LINKS, fk
 
 WEB = Path(__file__).with_name("web")
 
@@ -125,8 +130,18 @@ class Calibrator:
 class App:
     BATTERY_EVERY_S = 3.0  # the I2C bus is slow and flaky; don't read it on every refresh
 
-    def __init__(self, calib, camera, backend="sim", make_backend=make_backend):
+    SAMPLE_HZ = 20
+    HISTORY_S = 30
+
+    def __init__(self, calib, camera, backend="sim", make_backend=make_backend, sim_kind="sim",
+                 sample=False):
+        """sim_kind: what 'sim' means, 'sim' (kinematic) or 'mujoco' (physics).
+        sample=True starts a thread that steps physics and records history at SAMPLE_HZ."""
         self.calib, self.camera, self.make_backend = calib, camera, make_backend
+        self.sim_kind = sim_kind
+        self.t0 = time.monotonic()
+        self.history = collections.deque(maxlen=self.SAMPLE_HZ * self.HISTORY_S)
+        self.log = collections.deque(maxlen=200)
         self.lock = threading.Lock()
         self.arms = {}  # backend name -> Arm, created on first use
         self.board = None  # I2C backend, shared by the real Arm and the battery readout
@@ -135,6 +150,40 @@ class App:
         self.calibrator = Calibrator(None)
         self.servo_to_joint = {calib.servo(j): j for j in JOINTS}
         self.use(backend)
+        if sample:
+            threading.Thread(target=self._sampler, daemon=True).start()
+
+    # --- time, history, log ---
+    def now(self):
+        return round(time.monotonic() - self.t0, 3)
+
+    def event(self, kind, text, **extra):
+        self.log.append({"t": self.now(), "kind": kind, "text": text, **extra})
+
+    def _sync(self):
+        sync = getattr(self.arm.backend, "sync", None)
+        if sync:
+            sync()
+
+    def sample(self):
+        """Record one history point. Caller holds self.lock."""
+        self._sync()
+        cmd = self.arm.angles
+        self.history.append({"t": self.now(), "cmd": cmd, "live": self._live_angles(cmd),
+                             "actual": self._actual_angles()})
+
+    def _sampler(self):
+        period = 1.0 / self.SAMPLE_HZ
+        while True:
+            with self.lock:
+                try:
+                    self.sample()
+                except Exception as e:  # never let the sampler die silently
+                    self.event("error", f"sampler: {type(e).__name__}: {e}")
+            time.sleep(period)
+
+    def since(self, buf, t):
+        return [x for x in list(buf) if x["t"] > t]
 
     def _board(self):
         if self.board is None:
@@ -155,21 +204,35 @@ class App:
                     raise OSError(f"cannot open the board: {self.board_error}")
                 backend = self.board
             else:
-                backend = self.make_backend("sim")
+                backend = self.make_backend(self.sim_kind)
             self.arms[name] = Arm(backend, self.calib)
         self.backend_name, self.arm = name, self.arms[name]
         self.calibrator.arm = self.arm
+        self.event("backend", f"backend -> {self.label()}")
+
+    def label(self):
+        return "real arm" if self.backend_name == "i2c" else (
+            "mujoco sim" if self.sim_kind == "mujoco" else "kinematic sim")
 
     def state(self):
         with self.lock:
+            self._sync()
             commanded = self.arm.angles
             pulses = dict(self.arm.pulses)
             live = self._live_angles(commanded)
+            actual = self._actual_angles()
             battery, source = self._battery()
-        return {"backend": self.backend_name, "angles": commanded, "live": live, "pulses": pulses,
-                "fk": _fk(live), "target_fk": _fk(commanded),
+        return {"backend": self.backend_name, "backend_label": self.label(), "sim_kind": self.sim_kind,
+                "t": self.now(), "angles": commanded, "live": live, "actual": actual,
+                "pulses": pulses, "fk": _fk(live), "target_fk": _fk(commanded),
+                "actual_fk": _fk(actual) if actual else None,
                 "battery_mv": battery, "battery_source": source, "board_error": self.board_error,
-                "joints": JOINTS, "calibration": self.calib.joints}
+                "joints": JOINTS, "calibration": self.calib.joints, "links": LINKS}
+
+    def _actual_angles(self):
+        """Physics sim only: where the joints really are (sag, lag, torque limits)."""
+        ja = getattr(self.arm.backend, "joint_angles", None)
+        return {j: float(a) for j, a in ja().items()} if ja else None
 
     def _live_angles(self, commanded):
         """The sim knows where each servo is mid-move; the real arm can't tell us."""
@@ -198,27 +261,58 @@ class App:
         return mv, source
 
     def post(self, path, body):
-        d = body.get("duration_ms")
         with self.lock:
-            if path == "/api/backend":
-                self.use(body["name"])
-                return {"backend": self.backend_name}
-            if path == "/api/move":
-                angles, ms = self.arm.move({k: float(v) for k, v in body["angles"].items()}, d)
-                return {"angles": angles, "duration_ms": ms}
-            if path == "/api/move_to":
-                pitch = self.arm.move_to(tuple(body["xyz"]), body.get("pitch", -90), d)
-                return {"pitch": pitch, "angles": self.arm.angles}
-            if path == "/api/pulse":
-                return {"duration_ms": self.arm.move_pulse(body["joint"], int(body["us"]), d)}
-            if path == "/api/servo_pulses":
-                pulses = {self.servo_to_joint[int(s)]: int(us) for s, us in body["pulses"].items()}
-                return {"duration_ms": self.arm.send_pulses(pulses, d)}
-            if path == "/api/rest":
-                angles, ms = self.arm.rest(d)
-                return {"angles": angles, "duration_ms": ms}
-            if path == "/api/calibrate":
-                return self.calibrator.mark(body["joint"], body["mark"], body.get("angle"))
+            self._sync()
+            try:
+                out = self._post(path, body)
+            except Exception as e:
+                self.event("error", f"{path}: {e}")
+                raise
+            self._log_post(path, body, out)
+            return out
+
+    def _log_post(self, path, body, out):
+        ms = out.get("duration_ms")
+        if path == "/api/move":
+            req = {k: float(v) for k, v in body["angles"].items()}
+            got = out["angles"]
+            clamped = [f"{j} {req[j]:g}->{got[j]:g}" for j in req if abs(req[j] - got[j]) > 1e-6]
+            txt = ", ".join(f"{j}={got[j]:.0f}" for j in got) + f" in {ms}ms"
+            self.event("move", txt + (f" (clamped: {'; '.join(clamped)})" if clamped else ""),
+                       warn=bool(clamped))
+        elif path == "/api/move_to":
+            x, y, z = body["xyz"]
+            want, used = body.get("pitch", -90), out.get("pitch")
+            note = f", pitch {want:g}->{used:g}" if abs(used - want) > 1e-6 else ""
+            self.event("move_to", f"reach ({x:.0f}, {y:.0f}, {z:.0f}){note}", warn=bool(note))
+        elif path == "/api/rest":
+            self.event("move", f"rest in {ms}ms")
+        elif path == "/api/pulse":
+            self.event("pulse", f"{body['joint']} -> {body['us']}us")
+        elif path == "/api/calibrate":
+            self.event("calibrate", f"{body['joint']}: mark {body['mark']}")
+
+    def _post(self, path, body):
+        d = body.get("duration_ms")
+        if path == "/api/backend":
+            self.use(body["name"])
+            return {"backend": self.backend_name}
+        if path == "/api/move":
+            angles, ms = self.arm.move({k: float(v) for k, v in body["angles"].items()}, d)
+            return {"angles": angles, "duration_ms": ms}
+        if path == "/api/move_to":
+            pitch = self.arm.move_to(tuple(body["xyz"]), body.get("pitch", -90), d)
+            return {"pitch": pitch, "angles": self.arm.angles}
+        if path == "/api/pulse":
+            return {"duration_ms": self.arm.move_pulse(body["joint"], int(body["us"]), d)}
+        if path == "/api/servo_pulses":
+            pulses = {self.servo_to_joint[int(s)]: int(us) for s, us in body["pulses"].items()}
+            return {"duration_ms": self.arm.send_pulses(pulses, d)}
+        if path == "/api/rest":
+            angles, ms = self.arm.rest(d)
+            return {"angles": angles, "duration_ms": ms}
+        if path == "/api/calibrate":
+            return self.calibrator.mark(body["joint"], body["mark"], body.get("angle"))
         raise KeyError(path)
 
 
@@ -249,6 +343,14 @@ def make_handler(app):
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
                 return self._send(200, (WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if path == "/studio":
+                return self._send(200, (WEB / "studio.html").read_bytes(), "text/html; charset=utf-8")
+            if path in ("/api/history", "/api/log"):
+                q = dict(kv.split("=", 1) for kv in self.path.partition("?")[2].split("&") if "=" in kv)
+                since = float(q.get("since", -1))
+                with app.lock:
+                    buf = app.history if path == "/api/history" else app.log
+                    return self._send(200, {"t": app.now(), "items": app.since(buf, since)})
             if path == "/api/state":
                 return self._send(200, app.state())
             if path == "/api/battery":
@@ -310,11 +412,14 @@ def main(argv=None):
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--camera", type=int, default=0, help="/dev/videoN")
+    p.add_argument("--sim", default="sim", choices=["sim", "mujoco"],
+                   help="what the sim backend is: kinematic ('sim') or physics ('mujoco')")
     a = p.parse_args(argv)
-    app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim")
+    app = App(Calibration.load(), Camera(a.camera), "i2c" if a.real else "sim",
+              sim_kind=a.sim, sample=True)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(app))
     srv.daemon_threads = True
-    print(f"armpi server ({app.backend_name}) on http://{a.host}:{a.port}", flush=True)
+    print(f"armpi server ({app.label()}) on http://{a.host}:{a.port}", flush=True)
     srv.serve_forever()
 
 
