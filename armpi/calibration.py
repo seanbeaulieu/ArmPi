@@ -15,6 +15,8 @@ class Calibration:
         self.min_ms_per_us = data["min_ms_per_us"]
         self.first_move_ms = data["first_move_ms"]
         self.joints = data["joints"]
+        for j in self.joints.values():
+            j.pop("t", None)  # stray key an old server bug wrote into marked joints
 
     @classmethod
     def load(cls, path=None):

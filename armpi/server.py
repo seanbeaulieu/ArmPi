@@ -130,7 +130,7 @@ class Calibrator:
             else:
                 raise ValueError(f"bad mark {mark!r} for {joint}")
         cal.save()
-        return j
+        return dict(j)  # a copy: post() adds response fields ("t") to what we return
 
 
 class App:

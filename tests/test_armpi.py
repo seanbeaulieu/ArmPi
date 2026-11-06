@@ -4,6 +4,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import fixed_calibration  # noqa: E402,F401  (tests use a frozen calibration)
 
 from armpi import Arm, Calibration, protocol
 from armpi.backends import SimBackend

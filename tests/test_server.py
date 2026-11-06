@@ -10,11 +10,12 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import fixed_calibration  # noqa: E402,F401  (tests use a frozen calibration)
 
 from armpi import Arm, Calibration
 from armpi.backends import SimBackend
 from armpi.backends.remote import RemoteBackend
-from armpi.calibration import DEFAULT_PATH
+import armpi.calibration
 from armpi.server import App, make_handler
 
 
@@ -34,7 +35,7 @@ def no_board(name):
 def start_server(make_backend=no_board):
     tmp = tempfile.mkdtemp()
     cal_path = os.path.join(tmp, "calibration.yaml")
-    shutil.copy(DEFAULT_PATH, cal_path)
+    shutil.copy(armpi.calibration.DEFAULT_PATH, cal_path)
     app = App(Calibration.load(cal_path), NoCamera(), "sim", make_backend)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -99,7 +100,8 @@ def test_calibrate_marks_save_to_file():
     saved = Calibration.load(CAL_PATH)
     assert abs(saved.limits("shoulder")[0] - 40) < 0.2
     assert open(CAL_PATH).read().startswith("# ArmPi Mini servo calibration")  # header kept
-    assert DEFAULT_PATH.read_text() != open(CAL_PATH).read()  # repo file untouched
+    assert armpi.calibration.DEFAULT_PATH.read_text() != open(CAL_PATH).read()  # source untouched
+    assert "\n    t:" not in open(CAL_PATH).read()  # response fields don't leak into the file
 
 
 def test_live_angles_follow_sim_motion():
