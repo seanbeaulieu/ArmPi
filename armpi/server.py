@@ -130,7 +130,7 @@ class Calibrator:
             else:
                 raise ValueError(f"bad mark {mark!r} for {joint}")
         cal.save()
-        return j
+        return dict(j)  # a copy: the caller stamps its reply, and j is what gets saved
 
 
 class App:
@@ -217,6 +217,8 @@ class App:
                 backend = self.board
             else:
                 backend = self.make_backend(self.sim_kind)
+                if hasattr(backend, "calib"):  # MuJoCo turns pulses back into angles
+                    backend.calib = self.calib  # share it, so calibration marks reach the sim
             self.arms[name] = Arm(backend, self.calib)
         self.backend_name, self.arm = name, self.arms[name]
         self.calibrator.arm = self.arm
