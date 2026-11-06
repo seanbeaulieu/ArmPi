@@ -217,6 +217,10 @@ class App:
                 backend = self.board
             else:
                 backend = self.make_backend(self.sim_kind)
+                if hasattr(backend, "calib"):
+                    # the mujoco sim converts pulses -> angles itself: share our calibration so
+                    # new calibration marks reach it live instead of only after a restart
+                    backend.calib = self.calib
             self.arms[name] = Arm(backend, self.calib)
         self.backend_name, self.arm = name, self.arms[name]
         self.calibrator.arm = self.arm

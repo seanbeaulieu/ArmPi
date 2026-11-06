@@ -174,6 +174,22 @@ def test_real_url_drives_remote_servers_real_arm():
     pi_srv.shutdown()
 
 
+
+def test_sim_backend_shares_calibration():
+    """A sim that converts pulses itself (mujoco) must see new calibration marks live."""
+    class CalibSim(SimBackend):
+        calib = Calibration.load(CAL_PATH)  # its own stale copy, like MujocoBackend's
+
+    made = []
+    def factory(name):
+        if name == "i2c":
+            raise FileNotFoundError("/dev/i2c-1")
+        made.append(CalibSim())
+        return made[-1]
+    app = App(Calibration.load(CAL_PATH), NoCamera(), "sim", factory)
+    assert made and made[0].calib is app.calib
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
