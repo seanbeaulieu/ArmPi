@@ -100,6 +100,17 @@ def test_calibrate_marks_save_to_file():
     assert abs(saved.limits("shoulder")[0] - 40) < 0.2
     assert open(CAL_PATH).read().startswith("# ArmPi Mini servo calibration")  # header kept
     assert DEFAULT_PATH.read_text() != open(CAL_PATH).read()  # repo file untouched
+    assert "t" not in saved.joints["shoulder"]  # the reply's timestamp stays out of the file
+
+
+def test_sim_shares_the_servers_calibration():
+    sim = SimBackend()
+    sim.calib = None  # like MujocoBackend, which holds a Calibration of its own
+    srv, app, _, _ = start_server(lambda name: sim)
+    try:
+        assert sim.calib is app.calib
+    finally:
+        srv.shutdown()
 
 
 def test_live_angles_follow_sim_motion():
