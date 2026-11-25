@@ -90,6 +90,9 @@ the arm is calibrated.
     armpi/backends/mujoco.py physics sim: board-style pulse ramps -> position servos w/ torque limits
     armpi/sysid.py           film step moves with the wrist cam, fit the MuJoCo servo params
     armpi/vision.py          wrist cam calibration (intrinsics, hand-eye) and pixel -> table xyz
+    armpi/skills.py          pick / place primitives (hover, descend, grip, lift)
+    armpi/scene.py           find the drawn square, circle and objects in an image
+    armpi/task.py            square -> circle task: layout, slots, scorer, scripted policy, sim scene
     tools/deploy.sh          sync to the Pi and install
     tools/mujoco_view.py     watch the arm run a demo in MuJoCo
 
@@ -213,3 +216,21 @@ Fitted: kp, damping and torque limit per joint, plus the camera delay. The start
 isn't in view.
 
 CI (`.github/workflows/test.yml`) runs all tests, MuJoCo included, on every push.
+
+## Pick and place: square -> circle
+
+Objects sit inside a square drawn on paper; the arm moves them all into a drawn circle.
+
+- `armpi/skills.py`: `pick(x, y)` / `place(x, y)` (hover 60 mm, descend, grip, lift), `home()`.
+- `armpi/scene.py`: from one image, finds the drawn square + circle (dark pen on light paper)
+  and the colored objects, and maps them to table mm with the wrist cam calibration or an
+  overhead-cam homography.
+- `armpi/task.py`: layout + free slots in the circle + scorer + the scripted policy, and a
+  MuJoCo scene (paper, shapes, cubes).
+
+      python -m armpi.task --sim --cubes 3 --seed 1    # whole task in MuJoCo
+      python -m armpi.scene photo.jpg --out seen.jpg   # check detection on a photo
+
+Default layout (fits the reach): a 60 mm square centered at x=95, y=+65 (left of the arm),
+and a 40 mm radius circle at x=95, y=-65 (right), measured from the base center. Objects are
+~20 mm cubes. On the real arm, keep the fingertip at least 85 mm out from the base axis.
