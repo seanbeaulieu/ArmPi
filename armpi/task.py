@@ -12,6 +12,9 @@ same policy runs on ground truth in sim, on the wrist cam (armpi.scene) or on an
 
     python -m armpi.task --sim               # run the whole task in MuJoCo, print the score
     python -m armpi.task --sim --cubes 4 --seed 3
+    python -m armpi.task --url http://10.0.0.133:8000 demo    # real arm: one cube, hand-placed
+                                                             # at the square center -> circle center
+    python -m armpi.task --url http://10.0.0.133:8000 pick 95 65 place 95 -65 home
 """
 import argparse
 import math
@@ -161,15 +164,49 @@ def sim_scene(layout=None, n=3, obj_mm=20.0, seed=0):
     return be, sk, perceive
 
 
+def real_skills(url, **kw):
+    """Skills driving the real arm through the Pi's server (uses this checkout's calibration,
+    so pull the Pi's calibration first: tools/pull-calibration.sh)."""
+    from .arm import Arm
+    from .backends.remote import RemoteBackend
+    from .skills import Skills
+    be = RemoteBackend(url)
+    be.select("i2c")
+    return Skills(Arm(be), **kw)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--sim", action="store_true", help="run in MuJoCo with ground-truth perception")
+    ap.add_argument("--url", help="real arm via the Pi server, e.g. http://10.0.0.133:8000")
     ap.add_argument("--cubes", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--obj-h", type=float, default=20.0, help="object height, mm")
+    ap.add_argument("cmds", nargs="*", help="with --url: demo | pick X Y | place X Y | home")
     a = ap.parse_args(argv)
-    if not a.sim:
-        ap.error("only --sim for now; the real-arm run needs the camera calibrated (armpi.scene)")
     layout = Layout()
+    if a.url:
+        sk = real_skills(a.url)
+        print(f"battery {sk.arm.battery_mv() / 1000:.2f} V")
+        cmds = a.cmds or ["demo"]
+        if cmds == ["demo"]:
+            cmds = ["pick", *map(str, layout.square_c), "place", *map(str, layout.circle_c), "home"]
+        i = 0
+        while i < len(cmds):
+            c = cmds[i]
+            if c in ("pick", "place"):
+                x, y = float(cmds[i + 1]), float(cmds[i + 2])
+                print(f"{c} ({x:.0f}, {y:.0f})")
+                getattr(sk, c)(x, y, a.obj_h)
+                i += 3
+            elif c == "home":
+                sk.home()
+                i += 1
+            else:
+                ap.error(f"unknown command {c!r}")
+        return
+    if not a.sim:
+        ap.error("give --sim, or --url for the real arm")
     be, sk, perceive = sim_scene(layout, a.cubes, seed=a.seed)
 
     def step(i, o, slot):
