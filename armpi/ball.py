@@ -69,9 +69,23 @@ def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
     mask = (t > thr).astype(np.uint8) * 255
     # pen lines are long + thin: close fills the ball, open with a disk removes the lines
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)))
     if debug:
         globals()["_last_dbg"] = np.maximum(mask // 2, inner // 4)
+    # a ball touching a pen line merges with it into one non-compact blob: if nothing compact
+    # turns up, open harder (cuts the ~15 px lines off, the ~150 px ball survives)
+    for k in (13, 25):
+        opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        best = _best_blob(opened, W, H, min_r, max_r)
+        if best:
+            break
+    if best and roi is not None:
+        best["u"] += roi[0]
+        best["v"] += roi[1]
+    return best
+
+
+def _best_blob(mask, W, H, min_r, max_r):
+    cv2 = _cv2()
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     for c in contours:
@@ -87,9 +101,6 @@ def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
             m = cv2.moments(c)
             best = {"u": m["m10"] / m["m00"], "v": m["m01"] / m["m00"], "r": float(r),
                     "score": score, "held": False}
-    if best and roi is not None:
-        best["u"] += roi[0]
-        best["v"] += roi[1]
     return best
 
 
