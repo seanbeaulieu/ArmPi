@@ -48,7 +48,8 @@ def test_protocol_and_specs():
     assert [m["id"] for m in r] == [1, 2, 3]  # notification got no reply
     assert r[0]["result"]["protocolVersion"] == "2025-06-18"
     names = {s["name"] for s in r[1]["result"]["tools"]}
-    assert names == {"look", "pick", "place", "move_to", "gripper", "home", "status"}
+    assert names == {"look", "pick", "place", "move_to", "gripper", "home", "status",
+                     "move_ball", "calibrate_look"}
     for s in r[1]["result"]["tools"]:
         assert s["inputSchema"]["type"] == "object"
     assert r[2]["error"]["code"] == -32601
@@ -94,3 +95,26 @@ def test_sim_llm_style_episode():
     t.call("home")
     x, y, _ = t.truth()[0]["xyz"]
     assert abs(x - rx) < 15 and abs(y - ry) < 15, (x, y)
+
+
+def test_sim_move_ball_one_call():
+    pytest.importorskip("mujoco")
+    t = ArmTools.sim(n=1, seed=3, obj_h=20)  # 15 mm sim cubes slip in the sim fingers
+    out = t.call("move_ball", {"from": "left", "to": "right"})
+    log = out[0]["text"]
+    assert "DONE" in log, log
+    x, y, _ = t.truth()[0]["xyz"]
+    rx, ry = REGIONS["right"]["center"]
+    assert abs(x - rx) < 15 and abs(y - ry) < 15, (x, y, log)
+
+
+def test_look_calib_fit_roundtrip():
+    pytest.importorskip("cv2")
+    from armpi.ball import LookCalib
+    lc = LookCalib()
+    px = [(100, 100), (500, 110), (480, 400), (120, 390), (300, 250)]
+    tb = [(110, -50), (110, -80), (80, -80), (80, -50), (95, -65)]
+    err = lc.fit("right", px, tb)
+    assert err < 3
+    x, y = lc.to_table("right", 300, 250)
+    assert abs(x - 95) < 3 and abs(y + 65) < 3

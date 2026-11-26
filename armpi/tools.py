@@ -12,6 +12,9 @@ Coordinates are the arm's base frame in mm: origin = center of the base on the t
 """
 import base64
 import json
+import math
+
+import numpy as np
 
 # Named spots on the paper (base frame mm). Defaults = Sean's two squares (60 mm, ~115 mm out).
 REGIONS = {
@@ -28,6 +31,17 @@ LOOK_SETTLE_S = 0.6   # extra wait before the photo (the first photo after a mov
 
 def _text(s):
     return {"type": "text", "text": s}
+
+
+def _img(jpg):
+    return {"type": "image", "data": base64.b64encode(jpg).decode(), "mimeType": "image/jpeg"}
+
+
+def _near(a, b):
+    """Two detections at (about) the same pixel?"""
+    if not (a.get("pixel") and b.get("pixel")):
+        return False
+    return math.dist(a["pixel"], b["pixel"]) < max(25, a.get("r_px", 0))
 
 
 def _xy(args):
@@ -97,6 +111,24 @@ class ArmTools:
                  "open": {"type": "number", "minimum": 0, "maximum": 1}}, "required": ["open"]}},
             {"name": "home", "description": "Fold the arm to its rest pose (out of the camera's way).",
              "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "move_ball", "description":
+                "Do the whole move in one call: look at `from`, find the ball with the vision "
+                "detector, pick it, look again to check it left the paper (retries once), place "
+                "it at the `to` region's center (or at x, y), look to verify, go home. Returns "
+                "a step log and the final photo. Use this first; fall back to look/pick/place "
+                "when it reports a problem.",
+             "inputSchema": {"type": "object", "properties": {
+                 "from": {"type": "string", "enum": list(self.regions)},
+                 "to": {"type": "string", "enum": list(self.regions)},
+                 "x": {"type": "number", "description": "optional exact drop x, mm"},
+                 "y": {"type": "number", "description": "optional exact drop y, mm"}},
+                 "required": ["from", "to"]}},
+            {"name": "calibrate_look", "description":
+                "Self-calibrate pixel -> mm for one region's look pose. The ball must be at the "
+                "region's center. The arm moves it to 5 known spots, photographs and detects it "
+                "each time, fits a mapping, and leaves the ball at the center. ~1.5 min.",
+             "inputSchema": {"type": "object", "properties": {
+                 "region": {"type": "string", "enum": list(self.regions)}}, "required": ["region"]}},
             {"name": "status", "description":
                 "Battery voltage, last commanded fingertip position, and the regions.",
              "inputSchema": {"type": "object", "properties": {}}},
@@ -183,6 +215,113 @@ class ArmTools:
     def t_home(self, args):
         self.skills.home()
         return [_text("at rest pose")]
+
+    # --- vision-driven moves ---
+    def _look_pose(self, region):
+        cx, cy = self.regions[region]["center"]
+        self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z)
+        self.skills.wait(LOOK_SETTLE_S)
+
+    def _calib(self):
+        if not hasattr(self, "_lc"):
+            from .ball import LookCalib
+            self._lc = LookCalib.load()
+        return self._lc
+
+    def _locate(self, region):
+        """Look at region -> (xy_mm or None, info dict, jpg or None)."""
+        cx, cy = self.regions[region]["center"]
+        half = self.regions[region]["size"] / 2 + 10
+        self._look_pose(region)
+        if self.snapshot is None:  # sim: ground truth
+            for o in self.truth():
+                x, y, z = o["xyz"]
+                if abs(x - cx) <= half and abs(y - cy) <= half and z < self.obj_h:  # on the table
+                    return (x, y), {"how": "sim truth"}, None
+            return None, {"how": "sim truth", "seen": False}, None
+        import cv2
+        from .ball import find_ball
+        jpg = self.snapshot()
+        img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+        b = find_ball(img)
+        if b is None:
+            return None, {"seen": False}, jpg
+        info = {"seen": True, "pixel": (round(b["u"]), round(b["v"])), "r_px": round(b["r"])}
+        if self._calib().has(region):
+            x, y = self._calib().to_table(region, b["u"], b["v"])
+            info["how"] = "calibrated"
+            return (x, y), info, jpg
+        info["how"] = "UNCALIBRATED: using region center"
+        return (cx, cy), info, jpg
+
+    def t_move_ball(self, args):
+        src, dst = args["from"], args["to"]
+        log = []
+        xy, info, jpg = self._locate(src)
+        log.append(f"look {src}: {info}")
+        if xy is None:
+            out = [_text("\n".join(log + ["no ball found; stopped (use look/pick/place)"]))]
+            return out + ([_img(jpg)] if jpg else [])
+        picked = False
+        for attempt in (1, 2):
+            self.skills.pick(*xy, self.obj_h)
+            log.append(f"pick #{attempt} at ({xy[0]:.0f}, {xy[1]:.0f})")
+            xy2, info2, jpg = self._locate(src)
+            still = xy2 is not None and (self.snapshot is None or _near(info, info2))
+            log.append(f"check {src}: {'ball still there ' + str(info2) if still else 'ball gone (in gripper)'}")
+            if not still:
+                picked = True
+                break
+            xy, info = xy2, info2
+        if not picked:
+            self.skills.gripper(self.skills.open_frac)
+            self.skills.home()
+            return [_text("\n".join(log + ["pick failed twice; stopped"]))] + ([_img(jpg)] if jpg else [])
+        if "x" in args and "y" in args:
+            tx, ty = float(args["x"]), float(args["y"])
+        else:
+            tx, ty = self.regions[dst]["center"]
+        self.skills.place(tx, ty, self.obj_h)
+        log.append(f"place at ({tx:.0f}, {ty:.0f})")
+        xy3, info3, jpg = self._locate(dst)
+        log.append(f"verify {dst}: {info3}" + (f" -> ~({xy3[0]:.0f}, {xy3[1]:.0f}) mm" if xy3 else ""))
+        self.skills.home()
+        ok = xy3 is not None
+        log.append("DONE: ball is in " + dst if ok else "WARNING: ball not seen in " + dst)
+        return [_text("\n".join(log))] + ([_img(jpg)] if jpg else [])
+
+    def t_calibrate_look(self, args):
+        region = args["region"]
+        cx, cy = self.regions[region]["center"]
+        if self.snapshot is None:
+            return [_text("sim has no camera; nothing to calibrate")]
+        import cv2
+        from .ball import OFFSETS, find_ball
+        pixels, table, log = [], [], []
+        here = (cx, cy)
+        for dx, dy in OFFSETS[1:]:  # ball starts at the center; end back at the center
+            target = (cx + dx, cy + dy)
+            self.skills.pick(*here, self.obj_h)
+            self.skills.place(*target, self.obj_h)
+            here = target
+            self._look_pose(region)
+            img = cv2.imdecode(np.frombuffer(self.snapshot(), np.uint8), cv2.IMREAD_COLOR)
+            b = find_ball(img)
+            log.append(f"ball at ({target[0]:.0f}, {target[1]:.0f}) -> "
+                       + (f"pixel ({b['u']:.0f}, {b['v']:.0f})" if b else "NOT SEEN"))
+            if b:
+                pixels.append((b["u"], b["v"]))
+                table.append(target)
+        self.skills.home()
+        pts = {}
+        for p, t in zip(pixels, table):  # the center appears once in OFFSETS[1:] (last)
+            pts[t] = p
+        if len(pts) < 4:
+            return [_text("\n".join(log + [f"only {len(pts)} spots seen; need 4. not saved"]))]
+        err = self._calib().fit(region, list(pts.values()), list(pts.keys()))
+        self._calib().save()
+        return [_text("\n".join(log + [f"saved look calibration for {region}: "
+                                        f"{len(pts)} points, max fit error {err:.1f} mm"]))]
 
     def t_status(self, args):
         mv = self.skills.arm.battery_mv()
