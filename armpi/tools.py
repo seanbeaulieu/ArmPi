@@ -326,7 +326,7 @@ class ArmTools:
             return [_text("\n".join(log + ["put the ball at the region center first; stopped"]))]
         here, prev = (cx, cy), px(b)
         pts[here] = prev
-        stopped = None
+        stopped, scale = None, None
         for dx, dy in OFFSETS[1:]:
             target = (cx + dx, cy + dy)
             if target == here:
@@ -342,6 +342,16 @@ class ArmTools:
                 log.append(f"ball -> ({target[0]:.0f}, {target[1]:.0f}) try {attempt}: pixel "
                            f"({b['u']:.0f}, {b['v']:.0f}){'' if moved else '  DIDN\'T MOVE (missed grab)'}")
                 if moved:
+                    # did it land where it should? pixel step per mm moved must look like the
+                    # camera's scale (real arm: ~3.7 px/mm at the look pose); a drop elsewhere
+                    # gives a wildly different ratio
+                    ratio = math.dist(px(b), prev) / math.dist(target, here)
+                    lo, hi = (scale * 0.6, scale * 1.6) if scale else (1.5, 7.0)
+                    if not lo <= ratio <= hi:
+                        stopped = (f"ball landed in the wrong place ({ratio:.1f} px/mm, expected "
+                                   f"{lo:.1f}-{hi:.1f}): dropped or rolled")
+                        break
+                    scale = ratio if scale is None else (scale + ratio) / 2
                     here, prev = target, px(b)
                     pts[here] = prev
                     break
