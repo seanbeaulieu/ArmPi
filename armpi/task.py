@@ -169,9 +169,10 @@ def real_skills(url, **kw):
     so pull the Pi's calibration first: tools/pull-calibration.sh)."""
     from .arm import Arm
     from .backends.remote import RemoteBackend
-    from .skills import Skills
+    from .skills import Skills, true_z_to_cmd
     be = RemoteBackend(url)
     be.select("i2c")
+    kw.setdefault("z_map", true_z_to_cmd)
     return Skills(Arm(be), **kw)
 
 

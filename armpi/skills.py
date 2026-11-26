@@ -15,13 +15,34 @@ height h the fingertip goes to about h - grip_depth (clamped >= min_z) to grab i
 """
 import time
 
+import numpy as np
+
 from .calibration import JOINTS
+
+# Real arm, 2026-11-26: commanded fingertip z -> measured gap to the paper (mm), stepped down
+# over (95, -65) with pitch -90. The kinematic z is ~35% too small (shoulder/elbow calibration
+# scale, not a fixed offset); until the joints are refit, `true_z_to_cmd` inverts this table.
+Z_MEASURED = [(-5.0, 4.0), (0.0, 9.5), (5.0, 13.5), (10.0, 20.0), (15.0, 29.0), (20.0, 38.0)]
+
+
+def true_z_to_cmd(z, table=Z_MEASURED):
+    """Real fingertip height (mm) -> the z to command. Interpolated inside the table; below it,
+    the bottom segment's slope; above it, the top offset (heights above ~40 mm are unmeasured)."""
+    cmd, real = np.array(table).T
+    if z <= real[0]:
+        k = (cmd[1] - cmd[0]) / (real[1] - real[0])
+        return float(cmd[0] + k * (z - real[0]))
+    if z >= real[-1]:
+        return float(z - (real[-1] - cmd[-1]))
+    return float(np.interp(z, real, cmd))
 
 
 class Skills:
     def __init__(self, arm, wait=time.sleep, hover_z=60.0, grip_depth=14.0, min_z=4.0,
-                 pitch=-90.0, open_frac=1.0, move_ms=900, slow_ms=700, grip_ms=500, settle=0.25):
+                 pitch=-90.0, open_frac=1.0, move_ms=900, slow_ms=700, grip_ms=500, settle=0.25,
+                 z_map=None):
         self.arm = arm
+        self.z_map = z_map  # real z -> commanded z (true_z_to_cmd on the real arm); None = exact
         self.wait = wait
         self.hover_z = hover_z
         self.grip_depth = grip_depth
@@ -42,10 +63,16 @@ class Skills:
         return cls(arm, wait=backend.advance, **kw)
 
     # --- low level ---
-    def _go(self, xyz, ms):
-        """Fingertip to xyz; waits for the move (speed guard included) plus settle."""
+    def cmd_z(self, z):
+        return self.z_map(z) if self.z_map else z
+
+    def _go(self, xyz, ms, raw=False):
+        """Fingertip to xyz (real height, unless raw: the kinematic z as is); waits for the move
+        (speed guard included) plus settle."""
         from .kinematics import ik_search
         limits = {j: self.arm.calib.limits(j) for j in JOINTS if j != "gripper"}
+        if not raw:
+            xyz = (xyz[0], xyz[1], self.cmd_z(xyz[2]))
         sol = ik_search(xyz, self.pitch, limits)
         if sol is None:
             raise ValueError(f"{tuple(round(v) for v in xyz)} unreachable within joint limits")
@@ -65,7 +92,7 @@ class Skills:
         from .kinematics import ik_search
         limits = {j: self.arm.calib.limits(j) for j in JOINTS if j != "gripper"}
         zs = [self.hover_z, self.min_z if z is None else z]
-        return all(ik_search((x, y, zz), self.pitch, limits) for zz in zs)
+        return all(ik_search((x, y, self.cmd_z(zz)), self.pitch, limits) for zz in zs)
 
     def grip_z(self, obj_h):
         return max(obj_h - self.grip_depth, self.min_z)
@@ -76,9 +103,9 @@ class Skills:
         self.log.append(("home", ()))
         self._move({j: a for j, a in self.arm.calib.rest().items() if j != "gripper"}, 1200)
 
-    def move_to(self, x, y, z):
+    def move_to(self, x, y, z, raw=False):
         self.log.append(("move_to", (x, y, z)))
-        return self._go((x, y, z), self.move_ms)
+        return self._go((x, y, z), self.move_ms, raw)
 
     def pick(self, x, y, obj_h=20.0):
         """Grab an object of height obj_h (mm) centered at (x, y)."""

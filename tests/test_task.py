@@ -107,3 +107,22 @@ def test_sim_task_moves_cubes_into_circle():
     res = run(sk, lay, perceive)
     assert res["in_circle"] == 3, perceive()
     assert [p for p, _ in sk.log].count("pick") == 3
+
+
+def test_true_z_to_cmd_inverts_measured_table():
+    from armpi.skills import Z_MEASURED, true_z_to_cmd
+    for cmd, real in Z_MEASURED:
+        assert abs(true_z_to_cmd(real) - cmd) < 1e-9
+    assert true_z_to_cmd(60) == 42  # above the table: top offset
+    assert true_z_to_cmd(2) < -5    # below: extrapolated down
+    zs = [true_z_to_cmd(z) for z in range(-5, 80)]
+    assert all(b > a for a, b in zip(zs, zs[1:]))
+
+
+def test_skills_z_map_applies_except_raw():
+    from armpi.skills import Skills
+    sk = Skills.__new__(Skills)
+    sk.z_map = lambda z: z - 10
+    assert sk.cmd_z(30) == 20
+    sk.z_map = None
+    assert sk.cmd_z(30) == 30

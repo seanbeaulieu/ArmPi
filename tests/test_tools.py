@@ -35,7 +35,7 @@ class FakeSkills:
         self.arm = A()
         self.wait = lambda s: None
         for name in ("pick", "place", "move_to", "gripper", "home"):
-            setattr(self, name, lambda *a, _n=name: outer.calls.append((_n, a)) or -80.0)
+            setattr(self, name, lambda *a, _n=name, **kw: outer.calls.append((_n, a)) or -80.0)
 
 
 def test_protocol_and_specs():

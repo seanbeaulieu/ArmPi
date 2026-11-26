@@ -24,7 +24,7 @@ REGIONS = {
 # Look pose: the wrist cam points out along the gripper at a slant, so from right above a
 # region it sees past it. Pull the fingertip back toward the base and aim at the region:
 # on the real arm (66, +-45, 80) framed a whole 60 mm square at (95, +-65).
-LOOK_Z = 80.0
+LOOK_Z = 80.0  # kinematic (raw) z: the look pose and its homography were set up with it
 LOOK_PULLBACK = 0.7   # fingertip at this fraction of the region center's (x, y)
 LOOK_SETTLE_S = 0.6   # extra wait before the photo (the first photo after a move was blurred)
 
@@ -164,7 +164,7 @@ class ArmTools:
         where = args.get("where", "here")
         if where != "here":
             cx, cy = self.regions[where]["center"]
-            self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z)
+            self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z, raw=True)
             self.skills.wait(LOOK_SETTLE_S)
         out = []
         if self.snapshot:
@@ -231,7 +231,7 @@ class ArmTools:
     # --- vision-driven moves ---
     def _look_pose(self, region):
         cx, cy = self.regions[region]["center"]
-        self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z)
+        self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z, raw=True)
         self.skills.wait(LOOK_SETTLE_S)
 
     def _calib(self):

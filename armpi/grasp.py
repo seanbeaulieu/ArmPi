@@ -28,7 +28,7 @@ import yaml
 
 REF_PATH = Path(__file__).with_name("grasp_ref.yaml")
 PREGRASP_Z = 45.0
-GRIP_MIN_Z = 2.0      # fingertip floor for the die (Skills default is 4: a bit high on the real arm)
+GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 12       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square that we still try
 MAX_NUDGES = 3
