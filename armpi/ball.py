@@ -96,14 +96,22 @@ def _shift(b, roi):
     return b
 
 
-def _color_blob(hsv, inner, W, H, min_sat=100, min_val=35, min_r=25, max_r=90):
-    """Most compact-and-big saturated blob inside the paper (a die, a colored block) or None.
-    Dark blue reads V ~40-160 under this light, so the value floor is low; the floor and the
-    keyboard are saturated too but lie outside the paper. min_r keeps the small purplish
-    shadows in the paper ball's creases out (a ~16 mm die is r ~40 px from the look pose)."""
+def _color_blob(hsv, inner, W, H, min_sat=100, min_val=35, dark_frac=0.5, min_r=25, max_r=90):
+    """Most compact-and-big solid object inside the paper (the blue die, a colored block) or
+    None: pixels that are saturated OR much darker than the paper. Dark blue reads anywhere
+    from S ~90 / V ~55 to S ~200 / V ~160 depending on the light, so either cue counts. Pen
+    lines are dark too but thin: an opening removes them before a closing fills the die's pips.
+    The floor and keyboard lie outside the paper; min_r keeps the small dark creases of the
+    paper ball out (a ~16 mm die is r ~40 px from the look pose)."""
     cv2 = _cv2()
-    mask = ((hsv[..., 1] >= min_sat) & (hsv[..., 2] >= min_val) & (inner > 0)).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    if not inner.any():
+        return None
+    v = hsv[..., 2]
+    paper_v = float(np.median(v[inner > 0]))
+    solid = ((hsv[..., 1] >= min_sat) & (v >= min_val)) | (v < dark_frac * paper_v)
+    mask = (solid & (inner > 0)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
     b = _best_blob(mask, W, H, min_r, max_r, fill=0.4)  # a square fills 0.64 of its circle
     if b:
         b["kind"] = "color"
