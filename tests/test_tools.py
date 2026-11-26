@@ -33,6 +33,7 @@ class FakeSkills:
             def battery_mv(self):
                 return 4400
         self.arm = A()
+        self.wait = lambda s: None
         for name in ("pick", "place", "move_to", "gripper", "home"):
             setattr(self, name, lambda *a, _n=name: outer.calls.append((_n, a)) or -80.0)
 
@@ -57,7 +58,9 @@ def test_look_returns_image_and_moves_to_region():
     sk = FakeSkills()
     t = ArmTools(skills=sk, snapshot=lambda: b"\xff\xd8fakejpeg")
     content = t.call("look", {"where": "right"})
-    assert sk.calls[0] == ("move_to", (*REGIONS["right"]["center"], 90.0))
+    cx, cy = REGIONS["right"]["center"]
+    name, (x, y, z) = sk.calls[0]
+    assert name == "move_to" and abs(x - 0.7 * cx) < 1e-9 and abs(y - 0.7 * cy) < 1e-9 and z == 80.0
     img = [c for c in content if c["type"] == "image"][0]
     assert base64.b64decode(img["data"]) == b"\xff\xd8fakejpeg" and img["mimeType"] == "image/jpeg"
 

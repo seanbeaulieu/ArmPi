@@ -18,7 +18,12 @@ REGIONS = {
     "left": {"center": (95.0, 65.0), "size": 60.0},
     "right": {"center": (95.0, -65.0), "size": 60.0},
 }
-LOOK_Z = 90.0  # fingertip height for a look; camera sees the region at a slant from here
+# Look pose: the wrist cam points out along the gripper at a slant, so from right above a
+# region it sees past it. Pull the fingertip back toward the base and aim at the region:
+# on the real arm (66, +-45, 80) framed a whole 60 mm square at (95, +-65).
+LOOK_Z = 80.0
+LOOK_PULLBACK = 0.7   # fingertip at this fraction of the region center's (x, y)
+LOOK_SETTLE_S = 0.6   # extra wait before the photo (the first photo after a move was blurred)
 
 
 def _text(s):
@@ -115,7 +120,8 @@ class ArmTools:
         where = args.get("where", "here")
         if where != "here":
             cx, cy = self.regions[where]["center"]
-            self.skills.move_to(cx, cy, LOOK_Z)
+            self.skills.move_to(cx * LOOK_PULLBACK, cy * LOOK_PULLBACK, LOOK_Z)
+            self.skills.wait(LOOK_SETTLE_S)
         out = []
         if self.snapshot:
             jpg = self.snapshot()
