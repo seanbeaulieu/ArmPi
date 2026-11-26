@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "armpi": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "armpi.mcp_server", "--url", "http://10.0.0.133:8000"]
+    },
+    "armpi-sim": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "armpi.mcp_server", "--sim"]
+    }
+  }
+}

@@ -93,6 +93,8 @@ the arm is calibrated.
     armpi/skills.py          pick / place primitives (hover, descend, grip, lift)
     armpi/scene.py           find the drawn square, circle and objects in an image
     armpi/task.py            square -> circle task: layout, slots, scorer, scripted policy, sim scene
+    armpi/tools.py           the arm as LLM tools: look (wrist cam photo), pick, place, move_to, ...
+    armpi/mcp_server.py      those tools as an MCP server (stdio, stdlib only) for Claude Code
     tools/deploy.sh          sync to the Pi and install
     tools/mujoco_view.py     watch the arm run a demo in MuJoCo
 
@@ -234,3 +236,19 @@ Objects sit inside a square drawn on paper; the arm moves them all into a drawn 
 Default layout (fits the reach): a 60 mm square centered at x=95, y=+65 (left of the arm),
 and a 40 mm radius circle at x=95, y=-65 (right), measured from the base center. Objects are
 ~20 mm cubes. On the real arm, keep the fingertip at least 85 mm out from the base axis.
+
+## Let an LLM drive the arm (MCP)
+
+`armpi/mcp_server.py` exposes the arm as tools: `look` (moves the wrist cam over the `left` or
+`right` square and returns the photo), `pick(x, y)`, `place(x, y)`, `move_to(x, y, z)`,
+`gripper`, `home`, `status`. Claude Code is the LLM, so no API key is needed.
+
+1. Start the Pi server (on the Pi): `cd ~/ArmPi && .venv/bin/python -m armpi.server`
+2. On the PC, in the repo: `claude` (it reads `.mcp.json`; approve the `armpi` server).
+   `armpi-sim` is the same tools on the MuJoCo arm, no Pi needed.
+3. Ask it, e.g.: "look at the right square, find the paper ball, move it into the left
+   square, then look to check. Afterwards write the steps that worked as a python script."
+
+Coordinates are mm from the base center: +x forward, +y to the arm's left. The camera isn't
+calibrated yet, so `look` gives the model the photo (and rough xyz for colored objects only);
+it has to judge positions by eye, or nudge with `move_to` + `look("here")`.
