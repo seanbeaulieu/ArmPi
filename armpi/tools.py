@@ -244,8 +244,8 @@ class ArmTools:
         jpg = self.snapshot()
         img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
         b = find_ball(img)
-        if b is None:
-            return None, {"seen": False}, jpg
+        if b is None or b.get("held"):  # held = in the gripper, not on the paper
+            return None, {"seen": False, "held": bool(b)}, jpg
         info = {"seen": True, "pixel": (round(b["u"]), round(b["v"])), "r_px": round(b["r"])}
         if self._calib().has(region):
             x, y = self._calib().to_table(region, b["u"], b["v"])

@@ -28,41 +28,87 @@ def _cv2():
 
 
 # --- detector -------------------------------------------------------------------------------
-def find_ball(bgr, roi=None, min_r=8, max_r=160):
+def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
     """Best ball candidate in the image, or None.
 
-    The ball is a crumpled paper ball: bright like the paper, but full of creases and shading,
-    so it stands out as a compact blob of high local contrast (texture), while flat paper is
-    smooth and pen lines are thin. roi = (x0, y0, x1, y1) pixel box to search in.
+    -> {"u", "v", "r", "score", "held"}. held=True means the ball is in the gripper, right in
+    front of the lens (big, out of focus, across the bottom of the frame): NOT on the paper.
+
+    On the paper: a crumpled paper ball is bright like the paper but full of creases and
+    shading, so it stands out as a compact blob of high local contrast (texture), while flat
+    paper is smooth and pen lines are thin. Only the paper sheet is searched (the floor,
+    keyboard and the paper's own edge are textured too); blobs cut off by the image edge are
+    ignored. roi = (x0, y0, x1, y1) pixel box to search in (no held check then).
     """
     cv2 = _cv2()
     img = bgr if roi is None else bgr[roi[1]:roi[3], roi[0]:roi[2]]
+    H, W = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    if roi is None:
+        held = _held(gray)
+        if held:
+            return held
+    # paper = biggest bright, unsaturated region (the purple cast keeps S low), as its convex
+    # hull (fills pen lines and the ball), shrunk so the sheet's own edge isn't searched
+    light = ((hsv[..., 2] > 110) & (hsv[..., 1] < 110)).astype(np.uint8) * 255
+    light = cv2.morphologyEx(light, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(light)
+    if n < 2:
+        return None
+    paper = (lab == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))).astype(np.uint8) * 255
+    cs, _ = cv2.findContours(paper, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    paper = cv2.drawContours(np.zeros_like(paper), [cv2.convexHull(max(cs, key=cv2.contourArea))],
+                             -1, 255, -1)
+    inner = cv2.erode(paper, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)))
     # local contrast: |gray - blurred| averaged over a small window
     tex = cv2.blur(np.abs(gray - cv2.GaussianBlur(gray, (0, 0), 3)), (9, 9))
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    # drop dark pixels (pen, table, shadows) and saturated ones (colored stuff, floor)
-    ok = (hsv[..., 2] > 90) & (hsv[..., 1] < 90)
+    ok = (hsv[..., 2] > 90) & (inner > 0)
     t = np.where(ok, tex, 0)
-    thr = max(6.0, float(np.percentile(t, 90)))
+    thr = max(5.0, float(np.percentile(t[inner > 0], 85))) if inner.any() else 5.0
     mask = (t > thr).astype(np.uint8) * 255
-    # pen lines are long + thin: open with a disk removes them, close fills the ball
+    # pen lines are long + thin: close fills the ball, open with a disk removes the lines
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)))
+    if debug:
+        globals()["_last_dbg"] = np.maximum(mask // 2, inner // 4)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     for c in contours:
         area = cv2.contourArea(c)
         (u, v), r = cv2.minEnclosingCircle(c)
-        if not min_r <= r <= max_r or area < 0.35 * math.pi * r * r:  # compact only
-            continue
+        x, y, w, h = cv2.boundingRect(c)
+        if x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1:
+            continue  # cut off by the frame
+        if not min_r <= r <= max_r or area < 0.45 * math.pi * r * r:
+            continue  # compact and ball-sized only
         score = float(area * (0.5 + area / (math.pi * r * r)))
         if best is None or score > best["score"]:
-            best = {"u": float(u), "v": float(v), "r": float(r), "score": score}
+            m = cv2.moments(c)
+            best = {"u": m["m10"] / m["m00"], "v": m["m01"] / m["m00"], "r": float(r),
+                    "score": score, "held": False}
     if best and roi is not None:
         best["u"] += roi[0]
         best["v"] += roi[1]
     return best
+
+
+def _held(gray, band=(0.79, 1.0), cols=(0.19, 0.81), min_coarse=3.5, min_ratio=1.5):
+    """Ball in the gripper: it fills the bottom middle of the frame, so close it's out of
+    focus. There, big soft shading (coarse contrast) dominates fine detail; on paper (flat,
+    or with a sharp ball / pen lines on it) they're about equal. Real photos: held 1.8-2.7,
+    not held 0.9-1.25."""
+    cv2 = _cv2()
+    H, W = gray.shape
+    y0, x0, x1 = int(band[0] * H), int(cols[0] * W), int(cols[1] * W)
+    g = gray[y0:, x0:x1]
+    coarse = np.abs(cv2.GaussianBlur(g, (0, 0), 2) - cv2.GaussianBlur(g, (0, 0), 12))
+    fine = np.abs(g - cv2.GaussianBlur(g, (0, 0), 3))
+    c, f = float(coarse.mean()), float(fine.mean())
+    if c < min_coarse or c < min_ratio * f:
+        return None
+    return {"u": (x0 + x1) / 2, "v": float(H - 1), "r": (x1 - x0) / 2,
+            "score": round(c / max(f, 1e-6), 2), "held": True}
 
 
 def annotate(bgr, ball):
