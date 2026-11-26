@@ -84,8 +84,8 @@ class Skills:
         _, ms = self.arm.move(angles, ms)
         self.wait(ms / 1000 + self.settle)
 
-    def gripper(self, frac):
-        self._move({"gripper": frac}, self.grip_ms)
+    def gripper(self, frac, ms=None):
+        self._move({"gripper": frac}, ms or self.grip_ms)
 
     def reachable(self, x, y, z=None):
         """True if (x, y) can be reached at the hover height and the grip height."""

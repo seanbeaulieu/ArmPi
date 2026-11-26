@@ -83,3 +83,51 @@ def test_arm_waits_for_the_longer_remote_duration():
     arm = Arm(SlowServer(), Calibration.load())
     _, ms = arm.move({"base": 10.0}, 500)
     assert ms >= 2500
+
+
+class _FakeSkills:
+    open_frac, move_ms, slow_ms, grip_depth = 1.0, 900, 700, 14.0
+
+    def __init__(self):
+        self.calls = []
+
+    def wait(self, s):
+        pass
+
+    def _go(self, xyz, ms):
+        self.calls.append(("go", tuple(round(v, 1) for v in xyz)))
+
+    def gripper(self, frac, ms=None):
+        self.calls.append(("grip", frac, ms))
+
+
+def _grasper(angles):
+    """Grasper whose camera sees the die in the box at each angle in turn (then gone)."""
+    sk = _FakeSkills()
+    seq = iter(angles)
+    g = grasp.Grasper(sk, snapshot=lambda: b"", log=lambda *a: None,
+                      ref={"box": [320, 300], "angle": 0.0, "J": [[0, 4], [-4, 0]]})
+    g.photo = lambda tag, settle=0.6: tag
+    g.die_here = lambda tag: (lambda a: None if a is None else
+                              {"u": 320, "v": 300, "angle": a, "size": 90})(next(seq))
+    return g, sk
+
+
+def test_pick_squeezes_a_turned_die_then_grabs():
+    g, sk = _grasper([35, 3, None])  # 35 deg off -> squeeze -> square -> gone after grab
+    ok, why, _ = g.pick(95, -65)
+    assert ok, why
+    slow = [c for c in sk.calls if c[0] == "grip" and c[2] == grasp.SQUEEZE_MS]
+    assert len(slow) == 1
+
+
+def test_pick_square_die_no_squeeze():
+    g, sk = _grasper([4, None])
+    ok, _, _ = g.pick(95, -65)
+    assert ok and not [c for c in sk.calls if c[0] == "grip" and c[2] == grasp.SQUEEZE_MS]
+
+
+def test_pick_gives_up_when_squeezes_stall():
+    g, sk = _grasper([44, 44, 44])
+    ok, why, _ = g.pick(95, -65)
+    assert not ok and "rotated" in why

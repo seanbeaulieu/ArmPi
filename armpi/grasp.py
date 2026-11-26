@@ -16,9 +16,11 @@ die placed by hand under the open fingers) into grasp_ref.yaml:
 pick: look, nudge until the die sits in the box, check its angle, then forward LOOK_BACK_MM,
 straight down, close, up; back to the look pose: the die must be gone from the table.
 
-No wrist roll: finger yaw = atan2(y, x) of the grasp point, so the die's rotation can't be
-corrected, only checked (a parallel jaw closing on a die turned < ~25 deg usually twists it
-square; more than that is reported as "rotated").
+No wrist roll: finger yaw = atan2(y, x) of the grasp point, so the hand can't turn to match the
+die. Instead the die is turned: `square_up` drops the open fingers around it on the table,
+closes them SLOWLY (parallel jaws squeezing a square twist it flat against them: sensorless
+part orienting, Goldberg '93), opens, and looks again. Up to MAX_SQUEEZES; past MAX_ANGLE it's
+reported as "rotated" (near 45 deg a squeeze can stall on the corners).
 """
 import math
 from pathlib import Path
@@ -33,6 +35,9 @@ GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real 
 BOX_TOL_PX = 12       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square that we still try
 MAX_NUDGES = 3
+SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
+MAX_SQUEEZES = 2
+SQUEEZE_MS = 1500     # slow close, so the die turns instead of popping out
 MAX_STEP_MM = 15.0
 
 
@@ -191,27 +196,59 @@ class Grasper:
         self.sk.gripper(0.0)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
-    def pick(self, x, y):
-        """Line up from the look pose, grab blind, verify the die left the table.
-        -> (ok, reason, (x, y) actually grabbed at)."""
+    def line_up(self, x, y, tag="look"):
+        """From the look pose, nudge until the die sits in the box. -> (d, x, y, err) with
+        err None when lined up, else the reason."""
         r = self.ref
-        if not r:
-            raise RuntimeError("no grasp reference: teach first")
-        self.pregrasp(x, y)
+        self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
         for i in range(MAX_NUDGES + 1):
-            d = self.die_here(f"look_{i}")
+            d = self.die_here(f"{tag}_{i}")
             if not d:
-                return False, "die not seen from the look pose", (x, y)
+                return None, x, y, "die not seen from the look pose"
             du, dv = d["u"] - r["box"][0], d["v"] - r["box"][1]
             if math.hypot(du, dv) <= BOX_TOL_PX:
-                break
+                return d, x, y, None
             if i == MAX_NUDGES:
-                return False, f"couldn't line up (still {math.hypot(du, dv):.0f} px off)", (x, y)
+                return d, x, y, f"couldn't line up (still {math.hypot(du, dv):.0f} px off)"
             dx, dy = correction_mm(r["J"], du, dv, *self.look_pose(x, y))
             x, y = x + dx, y + dy
             self.log(f"  nudge ({dx:+.1f}, {dy:+.1f}) mm -> grasp at ({x:.1f}, {y:.1f})")
             self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
-        off = angle_off(d["angle"], r["angle"])
+
+    def squeeze(self, x, y):
+        """Open fingers down around the die, close slowly (turns it square to the jaws), open,
+        back up. The die stays on the table."""
+        self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
+        self.sk._go((x, y, self.grip_z()), self.sk.slow_ms)
+        self.sk.gripper(0.0, SQUEEZE_MS)
+        self.sk.gripper(self.sk.open_frac)
+        self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
+
+    def square_up(self, x, y):
+        """Line up; while the die is turned more than SQUARE_TOL, squeeze and look again.
+        -> (d, x, y, off_deg, err)."""
+        off = None
+        for k in range(MAX_SQUEEZES + 1):
+            d, x, y, err = self.line_up(x, y, f"look{k}")
+            if err:
+                return d, x, y, off, err
+            off = angle_off(d["angle"], self.ref["angle"])
+            if abs(off) <= SQUARE_TOL or k == MAX_SQUEEZES:
+                break
+            self.log(f"  die {off:+.0f} deg off square: squeeze {k + 1}")
+            self.squeeze(x, y)
+        return d, x, y, off, None
+
+    def pick(self, x, y):
+        """Line up and square the die from the look pose, grab blind, verify it left the
+        table. -> (ok, reason, (x, y) actually grabbed at)."""
+        r = self.ref
+        if not r:
+            raise RuntimeError("no grasp reference: teach first")
+        self.sk.gripper(self.sk.open_frac)
+        d, x, y, off, err = self.square_up(x, y)
+        if err:
+            return False, err, (x, y)
         if abs(off) > MAX_ANGLE:
             return False, f"die is rotated {off:.0f} deg to the fingers; needs straightening", (x, y)
         self._grab(x, y)
@@ -235,12 +272,13 @@ def main(argv=None):
     kept in grasp_ref.yaml between steps):
         python -m armpi.grasp pregrasp X Y     open gripper at the look pose for (X, Y), photo
         python -m armpi.grasp teach-box X Y    (die lined up by hand) record box + gain
+        python -m armpi.grasp square X Y       line up + squeeze the die square, no pick
         python -m armpi.grasp pick X Y         full visual pick (stays holding at PREGRASP_Z)
         python -m armpi.grasp place X Y
     """
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__.split("\n")[0])
-    ap.add_argument("step", choices=["pregrasp", "teach-box", "pick", "place"])
+    ap.add_argument("step", choices=["pregrasp", "teach-box", "square", "pick", "place"])
     ap.add_argument("x", type=float)
     ap.add_argument("y", type=float)
     ap.add_argument("--url", default="http://10.0.0.133:8000")
@@ -258,6 +296,8 @@ def main(argv=None):
         g.ref = g.teach_box(a.x, a.y)
         save_ref(g.ref)
         print("saved", g.ref)
+    elif a.step == "square":
+        print(g.square_up(a.x, a.y)[3:])
     elif a.step == "pick":
         print(g.pick(a.x, a.y))
     else:
