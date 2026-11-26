@@ -24,3 +24,7 @@ packages = ["armpi", "armpi.backends"]
 
 [tool.setuptools.package-data]
 armpi = ["calibration.yaml", "sim_params.yaml", "camera.yaml", "web/*.html"]
+
+[tool.pytest.ini_options]
+# only tests/: scratch scripts like scratch/*_test.py drive the REAL arm at import time
+testpaths = ["tests"]
