@@ -67,3 +67,19 @@ def test_correction_inverts_gain():
 def test_correction_step_is_clamped():
     dx, dy = grasp.correction_mm([[4, 0], [0, 4]], 400, 0, 100, 0, max_step=10)
     assert math.hypot(dx, dy) == pytest.approx(10)
+
+
+def test_arm_waits_for_the_longer_remote_duration():
+    from armpi.arm import Arm
+    from armpi.calibration import Calibration
+
+    class SlowServer:
+        def set_pulses(self, pulses, duration_ms):
+            return duration_ms + 2000  # the Pi's own guard slowed it down
+
+        def battery_mv(self):
+            return 7400
+
+    arm = Arm(SlowServer(), Calibration.load())
+    _, ms = arm.move({"base": 10.0}, 500)
+    assert ms >= 2500

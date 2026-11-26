@@ -29,8 +29,11 @@ class RemoteBackend(Backend):
             raise (ValueError if e.code == 400 else OSError)(f"{path}: {msg}") from None
 
     def set_pulses(self, pulses, duration_ms):
-        self._call("/api/servo_pulses", {"pulses": {str(s): int(us) for s, us in pulses.items()},
-                                         "duration_ms": int(duration_ms)})
+        """Returns the duration the server actually uses (its own speed guard may lengthen it,
+        e.g. its first move after a restart), so callers wait for the real move."""
+        r = self._call("/api/servo_pulses", {"pulses": {str(s): int(us) for s, us in pulses.items()},
+                                             "duration_ms": int(duration_ms)})
+        return r.get("duration_ms") if isinstance(r, dict) else None
 
     def select(self, name):
         """Switch which backend the remote server drives ('i2c' = its real arm)."""

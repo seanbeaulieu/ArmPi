@@ -56,7 +56,10 @@ class Arm:
         else:
             floor = max(known) * self.calib.min_ms_per_us
         duration_ms = int(max(duration_ms or 0, floor))
-        self.backend.set_pulses({self.calib.servo(j): us for j, us in pulses.items()}, duration_ms)
+        used = self.backend.set_pulses({self.calib.servo(j): us for j, us in pulses.items()},
+                                       duration_ms)
+        if isinstance(used, (int, float)):  # a remote server may slow the move down further
+            duration_ms = max(duration_ms, int(used))
         self.pulses.update(pulses)
         return duration_ms
 
