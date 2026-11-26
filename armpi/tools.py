@@ -128,7 +128,9 @@ class ArmTools:
                 "region's center. The arm moves it to 5 known spots, photographs and detects it "
                 "each time, fits a mapping, and leaves the ball at the center. ~1.5 min.",
              "inputSchema": {"type": "object", "properties": {
-                 "region": {"type": "string", "enum": list(self.regions)}}, "required": ["region"]}},
+                 "region": {"type": "string", "enum": list(self.regions)},
+                 "save_dir": {"type": "string", "description": "optional folder for the photos"}},
+                 "required": ["region"]}},
             {"name": "status", "description":
                 "Battery voltage, last commanded fingertip position, and the regions.",
              "inputSchema": {"type": "object", "properties": {}}},
@@ -291,34 +293,70 @@ class ArmTools:
         return [_text("\n".join(log))] + ([_img(jpg)] if jpg else [])
 
     def t_calibrate_look(self, args):
+        """Ball-as-target calibration. Checks every step and stops (instead of fitting garbage)
+        when a pick/place didn't actually move the ball. Photos go to save_dir if given."""
         region = args["region"]
         cx, cy = self.regions[region]["center"]
         if self.snapshot is None:
             return [_text("sim has no camera; nothing to calibrate")]
         import cv2
+        from pathlib import Path
         from .ball import OFFSETS, find_ball
-        pixels, table, log = [], [], []
-        here = (cx, cy)
-        for dx, dy in OFFSETS[1:]:  # ball starts at the center; end back at the center
-            target = (cx + dx, cy + dy)
-            self.skills.pick(*here, self.obj_h)
-            self.skills.place(*target, self.obj_h)
-            here = target
+        save = Path(args["save_dir"]) if args.get("save_dir") else None
+        if save:
+            save.mkdir(parents=True, exist_ok=True)
+        log, pts = [], {}
+
+        def shot(tag):
             self._look_pose(region)
-            img = cv2.imdecode(np.frombuffer(self.snapshot(), np.uint8), cv2.IMREAD_COLOR)
-            b = find_ball(img)
-            log.append(f"ball at ({target[0]:.0f}, {target[1]:.0f}) -> "
-                       + (f"pixel ({b['u']:.0f}, {b['v']:.0f})" if b else "NOT SEEN"))
-            if b:
-                pixels.append((b["u"], b["v"]))
-                table.append(target)
+            jpg = self.snapshot()
+            if save:
+                (save / f"{len(log):02d}_{tag}.jpg").write_bytes(jpg)
+            img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            return find_ball(img)
+
+        def px(b):
+            return (b["u"], b["v"])
+
+        b = shot("start")
+        log.append("start (ball at center?): " + (f"pixel ({b['u']:.0f}, {b['v']:.0f})"
+                                                  if b and not b.get("held") else "NOT SEEN"))
+        if not b or b.get("held"):
+            self.skills.home()
+            return [_text("\n".join(log + ["put the ball at the region center first; stopped"]))]
+        here, prev = (cx, cy), px(b)
+        pts[here] = prev
+        stopped = None
+        for dx, dy in OFFSETS[1:]:
+            target = (cx + dx, cy + dy)
+            if target == here:
+                continue
+            for attempt in (1, 2):
+                self.skills.pick(*here, self.obj_h)
+                self.skills.place(*target, self.obj_h)
+                b = shot(f"{target[0]:.0f}_{target[1]:.0f}_try{attempt}")
+                if b is None or b.get("held"):
+                    stopped = f"ball {'stuck in the gripper' if b else 'not seen'} after moving to {target}"
+                    break
+                moved = math.dist(px(b), prev) > 12
+                log.append(f"ball -> ({target[0]:.0f}, {target[1]:.0f}) try {attempt}: pixel "
+                           f"({b['u']:.0f}, {b['v']:.0f}){'' if moved else '  DIDN\'T MOVE (missed grab)'}")
+                if moved:
+                    here, prev = target, px(b)
+                    pts[here] = prev
+                    break
+            else:
+                stopped = f"two grabs in a row missed at {here}"
+            if stopped:
+                break
         self.skills.home()
-        pts = {}
-        for p, t in zip(pixels, table):  # the center appears once in OFFSETS[1:] (last)
-            pts[t] = p
+        if stopped:
+            log.append("STOPPED: " + stopped)
         if len(pts) < 4:
-            return [_text("\n".join(log + [f"only {len(pts)} spots seen; need 4. not saved"]))]
+            return [_text("\n".join(log + [f"{len(pts)} good spots; need 4. not saved"]))]
         err = self._calib().fit(region, list(pts.values()), list(pts.keys()))
+        if err > 8:
+            return [_text("\n".join(log + [f"fit error {err:.1f} mm is too big; not saved"]))]
         self._calib().save()
         return [_text("\n".join(log + [f"saved look calibration for {region}: "
                                         f"{len(pts)} points, max fit error {err:.1f} mm"]))]

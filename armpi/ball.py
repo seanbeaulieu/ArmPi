@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 
 LOOK_CALIB_PATH = Path(__file__).with_name("look_calib.yaml")
-OFFSETS = [(0, 0), (15, 15), (15, -15), (-15, 15), (-15, -15), (0, 0)]  # mm around center
+OFFSETS = [(0, 0), (12, 12), (12, -12), (-12, -12), (-12, 12), (0, 0)]  # mm around center
 
 
 def _cv2():
