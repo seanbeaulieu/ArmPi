@@ -1,20 +1,20 @@
-"""Visual grasp for a small die with the wrist cam: line it up under the fingers, then grab,
-then check it's really held.
+"""Visual grasp for a small die with the wrist cam: line it up, grab blind, check it left.
 
-The camera rides on the gripper, so from the pregrasp pose (open gripper, fingertip PREGRASP_Z
-above the table, pointing down) a die that the fingers can grab cleanly always shows up in the
-same pixel box, at the same size, square to the fingers. And a die that's really held sits in
-one fixed spot in the photo after the lift. Both are recorded once (`teach`) into
-grasp_ref.yaml:
+The camera rides on the gripper but looks ahead of the fingers: with the fingertips right
+above the die, the die is out of frame (cut off at the bottom edge at any height). So the
+camera looks from a LOOK POSE, LOOK_BACK_MM back toward the base at PREGRASP_Z (real mm), where
+a die that's right under the target point shows up in one pixel box. Taught once (`teach-box`,
+die placed by hand under the open fingers) into grasp_ref.yaml:
 
-    box     [u, v]  die center in the pregrasp photo when it's right under the fingers
-    angle   deg     die edge angle in that photo when square to the fingers
+    box     [u, v]  die center in the look photo when it's right under the grasp point
+    angle   deg     die edge angle there when square to the fingers
     size    px      die side length there
-    held    [u, v]  die center in the photo after closing + lifting to PREGRASP_Z
-    held_size px
-    J       2x2     pixel offset per mm of fingertip move in the GRIPPER frame
+    J       2x2     pixel shift per mm of fingertip move in the GRIPPER frame
                     (radial = away from the base, tangential = +90 deg from radial). The image
-                    turns with the base, so this is the same everywhere on the table.
+                    turns with the base, so this holds anywhere on the table.
+
+pick: look, nudge until the die sits in the box, check its angle, then forward LOOK_BACK_MM,
+straight down, close, up; back to the look pose: the die must be gone from the table.
 
 No wrist roll: finger yaw = atan2(y, x) of the grasp point, so the die's rotation can't be
 corrected, only checked (a parallel jaw closing on a die turned < ~25 deg usually twists it
@@ -27,13 +27,13 @@ import numpy as np
 import yaml
 
 REF_PATH = Path(__file__).with_name("grasp_ref.yaml")
-PREGRASP_Z = 45.0
+PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
+LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 12       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square that we still try
 MAX_NUDGES = 3
 MAX_STEP_MM = 15.0
-HELD_TOL_PX = 40
 
 
 def _cv2():
@@ -140,9 +140,15 @@ class Grasper:
         self.n += 1
         return cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
 
+    def look_pose(self, x, y):
+        """Where the fingertip goes to SEE a die at (x, y): LOOK_BACK_MM back toward the base
+        (the camera looks ahead of the fingers; right above the die it's out of frame)."""
+        rad, _ = gripper_frame(x, y)
+        return x - LOOK_BACK_MM * rad[0], y - LOOK_BACK_MM * rad[1]
+
     def pregrasp(self, x, y):
         self.sk.gripper(self.sk.open_frac)
-        self.sk._go((x, y, PREGRASP_Z), self.sk.move_ms)
+        self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.move_ms)
 
     def die_here(self, tag):
         d = find_die(self.photo(tag))
@@ -152,77 +158,70 @@ class Grasper:
 
     # one-time teaching -----------------------------------------------------------------------
     def teach_box(self, x, y):
-        """Die placed by hand right under the open fingers, square to them; arm at pregrasp."""
+        """Die placed by hand right under the open fingers at (x, y), square to them. Goes to
+        the look pose and records where the die shows up + the pixel gain."""
+        self.pregrasp(x, y)
         d = self.die_here("teach_box")
         if not d:
-            raise RuntimeError("no die in the pregrasp photo")
+            raise RuntimeError("no die in the look photo")
         ref = {"box": [round(d["u"], 1), round(d["v"], 1)], "angle": round(d["angle"], 1),
-               "size": round(d["size"], 1), "taught_at": [x, y]}
-        # gain: move the fingertip 6 mm radially, then 6 mm tangentially; the die stays put
+               "size": round(d["size"], 1), "taught_at": [x, y], "look_back_mm": LOOK_BACK_MM,
+               "pregrasp_z": PREGRASP_Z}
+        # gain: move the look pose 6 mm radially, then 6 mm tangentially; the die stays put
         rad, tan = gripper_frame(x, y)
+        lx, ly = self.look_pose(x, y)
         cols = []
         for name, vec in (("radial", rad), ("tangential", tan)):
-            px, py = x + 6 * vec[0], y + 6 * vec[1]
-            self.sk._go((px, py, PREGRASP_Z), self.sk.slow_ms)
+            self.sk._go((lx + 6 * vec[0], ly + 6 * vec[1], PREGRASP_Z), self.sk.slow_ms)
             d2 = self.die_here(f"teach_{name}")
             if not d2:
                 raise RuntimeError(f"die lost after a 6 mm {name} move")
             cols.append([(d2["u"] - d["u"]) / 6.0, (d2["v"] - d["v"]) / 6.0])
-            self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
+            self.sk._go((lx, ly, PREGRASP_Z), self.sk.slow_ms)
         ref["J"] = [[round(cols[0][0], 2), round(cols[1][0], 2)],
                     [round(cols[0][1], 2), round(cols[1][1], 2)]]
         self.ref = ref
         return ref
 
-    def teach_held(self, x, y):
-        """After teach_box: grab at (x, y), lift to pregrasp height, record where the die sits."""
-        self._grab(x, y)
-        d = self.die_here("teach_held")
-        if not d:
-            raise RuntimeError("no die visible after the grab")
-        self.ref["held"] = [round(d["u"], 1), round(d["v"], 1)]
-        self.ref["held_size"] = round(d["size"], 1)
-        return self.ref
-
     # the grasp -------------------------------------------------------------------------------
     def _grab(self, x, y):
+        """From the look pose: forward to above (x, y), straight down, close, back up."""
+        self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
         self.sk._go((x, y, self.grip_z()), self.sk.slow_ms)
         self.sk.gripper(0.0)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
-    def is_held(self, d):
-        r = self.ref
-        return bool(d and math.dist((d["u"], d["v"]), r["held"]) <= HELD_TOL_PX
-                    and abs(d["size"] - r["held_size"]) <= 0.35 * r["held_size"])
-
     def pick(self, x, y):
-        """Line up, grab, verify. -> (ok, reason, (x, y) actually grabbed at)."""
+        """Line up from the look pose, grab blind, verify the die left the table.
+        -> (ok, reason, (x, y) actually grabbed at)."""
         r = self.ref
-        if not r or "held" not in r:
+        if not r:
             raise RuntimeError("no grasp reference: teach first")
         self.pregrasp(x, y)
         for i in range(MAX_NUDGES + 1):
-            d = self.die_here(f"pregrasp_{i}")
+            d = self.die_here(f"look_{i}")
             if not d:
-                return False, "die not seen from the pregrasp pose", (x, y)
+                return False, "die not seen from the look pose", (x, y)
             du, dv = d["u"] - r["box"][0], d["v"] - r["box"][1]
             if math.hypot(du, dv) <= BOX_TOL_PX:
                 break
             if i == MAX_NUDGES:
                 return False, f"couldn't line up (still {math.hypot(du, dv):.0f} px off)", (x, y)
-            dx, dy = correction_mm(r["J"], du, dv, x, y)
+            dx, dy = correction_mm(r["J"], du, dv, *self.look_pose(x, y))
             x, y = x + dx, y + dy
-            self.log(f"  nudge ({dx:+.1f}, {dy:+.1f}) mm -> ({x:.1f}, {y:.1f})")
-            self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
+            self.log(f"  nudge ({dx:+.1f}, {dy:+.1f}) mm -> grasp at ({x:.1f}, {y:.1f})")
+            self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
         off = angle_off(d["angle"], r["angle"])
         if abs(off) > MAX_ANGLE:
             return False, f"die is rotated {off:.0f} deg to the fingers; needs straightening", (x, y)
         self._grab(x, y)
+        # held check: the die must be gone from where it was (in the fingers, out of frame)
+        self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
         d = self.die_here("after_grab")
-        if self.is_held(d):
-            return True, f"held (angle was {off:+.0f} deg)", (x, y)
+        if d is None or math.dist((d["u"], d["v"]), r["box"]) > 3 * BOX_TOL_PX:
+            return True, f"die picked up (it was {off:+.0f} deg off square)", (x, y)
         self.sk.gripper(self.sk.open_frac)
-        return False, "grab missed (die not between the fingers after the lift)", (x, y)
+        return False, "grab missed (die still on the table)", (x, y)
 
     def place(self, x, y, drop=2.0):
         self.sk._go((x, y, PREGRASP_Z), self.sk.move_ms)
@@ -234,15 +233,14 @@ class Grasper:
 def main(argv=None):
     """Step-by-step driver for the real arm (each step is its own process; the reference is
     kept in grasp_ref.yaml between steps):
-        python -m armpi.grasp pregrasp X Y     open gripper over (X, Y) at PREGRASP_Z, photo
+        python -m armpi.grasp pregrasp X Y     open gripper at the look pose for (X, Y), photo
         python -m armpi.grasp teach-box X Y    (die lined up by hand) record box + gain
-        python -m armpi.grasp teach-held X Y   grab, lift, record the held spot
         python -m armpi.grasp pick X Y         full visual pick (stays holding at PREGRASP_Z)
         python -m armpi.grasp place X Y
     """
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__.split("\n")[0])
-    ap.add_argument("step", choices=["pregrasp", "teach-box", "teach-held", "pick", "place"])
+    ap.add_argument("step", choices=["pregrasp", "teach-box", "pick", "place"])
     ap.add_argument("x", type=float)
     ap.add_argument("y", type=float)
     ap.add_argument("--url", default="http://10.0.0.133:8000")
@@ -257,13 +255,7 @@ def main(argv=None):
         g.pregrasp(a.x, a.y)
         g.die_here("pregrasp")
     elif a.step == "teach-box":
-        g.pregrasp(a.x, a.y)
         g.ref = g.teach_box(a.x, a.y)
-        save_ref(g.ref)
-        print("saved", g.ref)
-    elif a.step == "teach-held":
-        g.pregrasp(a.x, a.y)
-        g.teach_held(a.x, a.y)
         save_ref(g.ref)
         print("saved", g.ref)
     elif a.step == "pick":
