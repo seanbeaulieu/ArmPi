@@ -31,7 +31,8 @@ def _cv2():
 def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
     """Best ball candidate in the image, or None.
 
-    -> {"u", "v", "r", "score", "held"}. held=True means the ball is in the gripper, right in
+    -> {"u", "v", "r", "score", "held", "kind"}. kind "color": a saturated object on the paper
+    (e.g. the blue die), checked first; "white": the paper ball. held=True means the ball is in the gripper, right in
     front of the lens (big, out of focus, across the bottom of the frame): NOT on the paper.
 
     On the paper: a crumpled paper ball is bright like the paper but full of creases and
@@ -45,10 +46,6 @@ def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
     H, W = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    if roi is None:
-        held = _held(gray)
-        if held:
-            return held
     # paper = biggest bright, unsaturated region (the purple cast keeps S low), as its convex
     # hull (fills pen lines and the ball), shrunk so the sheet's own edge isn't searched
     light = ((hsv[..., 2] > 110) & (hsv[..., 1] < 110)).astype(np.uint8) * 255
@@ -61,6 +58,15 @@ def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
     paper = cv2.drawContours(np.zeros_like(paper), [cv2.convexHull(max(cs, key=cv2.contourArea))],
                              -1, 255, -1)
     inner = cv2.erode(paper, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)))
+    # a colored object (the blue die) on the paper wins outright: it is unambiguous, and its
+    # sharp dark edges near the bottom can look like the out-of-focus "held" cue
+    color = _color_blob(hsv, inner, W, H)
+    if color:
+        return _shift(color, roi)
+    if roi is None:
+        held = _held(gray)
+        if held:
+            return held
     # local contrast: |gray - blurred| averaged over a small window
     tex = cv2.blur(np.abs(gray - cv2.GaussianBlur(gray, (0, 0), 3)), (9, 9))
     ok = (hsv[..., 2] > 90) & (inner > 0)
@@ -78,13 +84,33 @@ def find_ball(bgr, roi=None, min_r=25, max_r=160, debug=False):
         best = _best_blob(opened, W, H, min_r, max_r)
         if best:
             break
-    if best and roi is not None:
-        best["u"] += roi[0]
-        best["v"] += roi[1]
-    return best
+    if best:
+        best["kind"] = "white"
+    return _shift(best, roi)
 
 
-def _best_blob(mask, W, H, min_r, max_r):
+def _shift(b, roi):
+    if b and roi is not None:
+        b["u"] += roi[0]
+        b["v"] += roi[1]
+    return b
+
+
+def _color_blob(hsv, inner, W, H, min_sat=100, min_val=35, min_r=25, max_r=90):
+    """Most compact-and-big saturated blob inside the paper (a die, a colored block) or None.
+    Dark blue reads V ~40-160 under this light, so the value floor is low; the floor and the
+    keyboard are saturated too but lie outside the paper. min_r keeps the small purplish
+    shadows in the paper ball's creases out (a ~16 mm die is r ~40 px from the look pose)."""
+    cv2 = _cv2()
+    mask = ((hsv[..., 1] >= min_sat) & (hsv[..., 2] >= min_val) & (inner > 0)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    b = _best_blob(mask, W, H, min_r, max_r, fill=0.4)  # a square fills 0.64 of its circle
+    if b:
+        b["kind"] = "color"
+    return b
+
+
+def _best_blob(mask, W, H, min_r, max_r, fill=0.45):
     cv2 = _cv2()
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
@@ -94,7 +120,7 @@ def _best_blob(mask, W, H, min_r, max_r):
         x, y, w, h = cv2.boundingRect(c)
         if x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1:
             continue  # cut off by the frame
-        if not min_r <= r <= max_r or area < 0.45 * math.pi * r * r:
+        if not min_r <= r <= max_r or area < fill * math.pi * r * r:
             continue  # compact and ball-sized only
         score = float(area * (0.5 + area / (math.pi * r * r)))
         if best is None or score > best["score"]:
