@@ -44,6 +44,16 @@ def _near(a, b):
     return math.dist(a["pixel"], b["pixel"]) < max(25, a.get("r_px", 0))
 
 
+def _affine_predict(table_pts, pixels, target):
+    """Least-squares affine table->pixel from >= 3 pairs; predicted pixel of target."""
+    A = np.array([[x, y, 1.0] for x, y in table_pts])
+    P = np.asarray(pixels, float)
+    if np.linalg.matrix_rank(A) < 3:
+        return None
+    M, *_ = np.linalg.lstsq(A, P, rcond=None)
+    return tuple(np.array([target[0], target[1], 1.0]) @ M)
+
+
 def _xy(args):
     return float(args["x"]), float(args["y"])
 
@@ -351,6 +361,12 @@ class ArmTools:
                         stopped = (f"ball landed in the wrong place ({ratio:.1f} px/mm, expected "
                                    f"{lo:.1f}-{hi:.1f}): dropped or rolled")
                         break
+                    if len(pts) >= 3:  # 3+ good spots: predict where it should appear
+                        pred = _affine_predict(list(pts.keys()), list(pts.values()), target)
+                        if pred is not None and math.dist(pred, px(b)) > 30:
+                            stopped = (f"ball seen at ({b['u']:.0f}, {b['v']:.0f}) but should be near "
+                                       f"({pred[0]:.0f}, {pred[1]:.0f}): it didn't land at {target}")
+                            break
                     scale = ratio if scale is None else (scale + ratio) / 2
                     here, prev = target, px(b)
                     pts[here] = prev
