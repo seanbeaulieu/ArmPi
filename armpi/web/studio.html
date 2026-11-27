@@ -7,11 +7,11 @@
 <style>
   :root { --bg:#f4f4f1; --panel:#fff; --ink:#1c1c1a; --mute:#6d6d67; --line:#e0e0da; --grid:#e6e6e0;
           --accent:#2f6fde; --cmd:#2f6fde; --live:#8a8a84; --act:#1c1c1a; --warn:#c2410c; --ok:#15803d;
-          --trail:#d97706; --target:#db2777; }
+          --trail:#d97706; --target:#db2777; --body:#d6d6cf; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#121211; --panel:#1c1c1a; --ink:#ececea; --mute:#9a9a94; --line:#30302d; --grid:#262624;
             --accent:#6c9cf0; --cmd:#6c9cf0; --live:#77776f; --act:#ececea; --warn:#f08a4b; --ok:#4ade80;
-            --trail:#f59e0b; --target:#f472b6; }
+            --trail:#f59e0b; --target:#f472b6; --body:#4a4a45; }
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 system-ui, sans-serif; }
@@ -112,6 +112,7 @@
         <label class="chk"><input type="checkbox" id="o_ghost" checked>commanded</label>
         <label class="chk"><input type="checkbox" id="o_trail" checked>trail</label>
         <label class="chk"><input type="checkbox" id="o_env" checked>reach</label>
+        <label class="chk"><input type="checkbox" id="o_solid" checked>solid</label>
         <button id="b_view">reset view</button>
       </h2>
       <canvas id="view"></canvas>
@@ -218,11 +219,11 @@ function fkPoints(a, L) {
   const add = (p, s, k) => [p[0] + s[0] * k, p[1] + s[1] * k, p[2] + s[2] * k];
   return {table: pts[0], turntable: pts[1], shoulder: pts[2], elbow: pts[3], wrist: pts[4], gb: pts[5], tip: pts[6],
           fl: [add(pts[5], side, 1), add(pts[6], side, 1)], fr: [add(pts[5], side, -1), add(pts[6], side, -1)],
-          pitch: a.shoulder + a.elbow + a.wrist};
+          pitch: a.shoulder + a.elbow + a.wrist, yaw, open: g};
 }
 
 // ---------- tiny 3D camera on a 2D canvas ----------
-const V = {yaw: -0.75, pitch: 0.42, dist: 620, target: [60, 0, 90]};
+const V = {yaw: -0.6, pitch: 0.5, dist: 430, target: [80, 0, 50]};
 const V0 = {...V, target: [...V.target]};
 const cv = $('view'), cx = cv.getContext('2d');
 let W = 0, Hh = 0, DPR = 1;
@@ -274,6 +275,73 @@ function ball(p, r, color, ring) {
   if (ring) { cx.strokeStyle = color; cx.lineWidth = 2; cx.stroke(); } else { cx.fillStyle = color; cx.fill(); }
 }
 function text(p, s, color) { const q = proj(p); if (!q) return; cx.fillStyle = color; cx.fillText(s, q[0] + 6, q[1] - 6); }
+
+// ---------- solid bodies: boxes with simple shading (painter's order) ----------
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const addv = (a, b, k = 1) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+const LIGHT = norm([0.4, -0.5, 1]);
+function shade(hex, k) {   // k in [0, 1]: darker .. base color
+  const c = hex.startsWith('#') ? hex : '#888888', n = parseInt(c.slice(1), 16);
+  const f = 0.55 + 0.45 * k, ch = s => Math.round(((n >> s) & 255) * f);
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+// box from p0 to p1 (its long axis), `side` = unit width axis, w x t cross-section (mm)
+function boxFaces(p0, p1, side, w, t, color) {
+  const ax = norm(sub(p1, p0)), up = norm(cross(ax, side));
+  const c = [];
+  for (const p of [p0, p1]) for (const [i, j] of [[-1, -1], [1, -1], [1, 1], [-1, 1]])
+    c.push(addv(addv(p, side, i * w / 2), up, j * t / 2));
+  const F = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+  return F.map(f => {
+    const pts = f.map(i => c[i]);
+    let n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
+    const mid = pts.reduce((a, p) => addv(a, p, 0.25), [0, 0, 0]);
+    const out = sub(mid, addv(p0, sub(p1, p0), 0.5));
+    if (dot(n, out) < 0) n = n.map(v => -v);
+    return {pts, n, color, z: dot(sub(mid, B.eye), B.fwd)};
+  });
+}
+function drawFaces(faces, edge) {
+  faces = faces.filter(f => dot(f.n, sub(B.eye, f.pts[0])) > 0);   // back-face cull
+  faces.sort((a, b) => b.z - a.z);
+  for (const f of faces) poly(f.pts, edge, 1, null, shade(f.color, Math.max(0, dot(f.n, LIGHT)) * 0.8 + 0.2));
+}
+function cylinder(c, r, h, color, n = 28) {
+  const ring = z => { const p = []; for (let k = 0; k <= n; k++) { const t = k / n * 2 * Math.PI; p.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t), z]); } return p; };
+  const lo = ring(c[2]), hi = ring(c[2] + h);
+  for (let k = 0; k < n; k++) {
+    const nn = [Math.cos((k + .5) / n * 2 * Math.PI), Math.sin((k + .5) / n * 2 * Math.PI), 0];
+    if (dot(nn, sub(B.eye, lo[k])) <= 0) continue;
+    poly([lo[k], lo[k + 1], hi[k + 1], hi[k]], null, 1, null, shade(color, Math.max(0, dot(nn, LIGHT)) * .8 + .2));
+  }
+  poly(hi, css('--line'), 1, null, shade(color, 1));
+}
+function hexOf(v) { v = css(v); return v.startsWith('#') && v.length === 7 ? v : '#888888'; }
+
+// the arm as solids: links, servo hubs, gripper body, fingers, wrist camera
+function drawSolidArm(P) {
+  const side = [-Math.sin(P.yaw), Math.cos(P.yaw), 0];
+  const body = hexOf('--body'), dark = hexOf('--act');
+  cylinder([0, 0, P.turntable[2] - 2], 34, 8, body);
+  let faces = [];
+  faces.push(...boxFaces(P.turntable, P.shoulder, side, 36, 30, body));
+  faces.push(...boxFaces(P.shoulder, P.elbow, side, 26, 14, body));
+  faces.push(...boxFaces(P.elbow, P.wrist, side, 24, 12, body));
+  faces.push(...boxFaces(P.wrist, P.gb, side, 30, 22, body));
+  // wrist camera: a small box on the gripper body, on the far side from the base
+  const ax = norm(sub(P.gb, P.wrist)), up = norm(cross(ax, side));
+  const cam0 = addv(addv(P.wrist, ax, 10), up, -16), cam1 = addv(cam0, ax, 14);
+  faces.push(...boxFaces(cam0, cam1, side, 16, 8, dark));
+  // fingers: plates at the gripper's opening
+  for (const s of [1, -1]) {
+    const o = side.map(v => v * s * P.open);
+    faces.push(...boxFaces(addv(P.gb, o), addv(P.tip, o), side, 4, 12, body));
+  }
+  drawFaces(faces, css('--line'));
+  for (const k of ['shoulder', 'elbow', 'wrist']) ball(P[k], 7, css('--act'));
+}
 
 function nearLimit(j, a) {
   const lim = S?.calibration?.[j]?.limits; if (!lim || a == null || j === 'gripper') return false;
@@ -340,7 +408,8 @@ function draw() {
     const sh = p => [p[0], p[1], 0];
     poly([Pa.shoulder, Pa.elbow, Pa.wrist, Pa.tip].map(sh), null, 1, null, null);
     for (const [s, e] of [['shoulder', 'elbow'], ['elbow', 'wrist'], ['wrist', 'tip']]) line(sh(Pa[s]), sh(Pa[e]), grid, 4);
-    drawArm(Pa, act, css('--act'), 4, null, true);
+    if ($('o_solid').checked) { drawSolidArm(Pa); drawArm(Pa, act, css('--act'), 1.5, null, true); }
+    else drawArm(Pa, act, css('--act'), 4, null, true);
     if (S.scene && S.scene.die.status === 'held') drawDie([Pa.tip[0], Pa.tip[1]], Pa.tip[2] - 2, 'held');
     text(Pa.tip, Pa.tip.map(v => v.toFixed(0)).join(', '), mute);
   }
