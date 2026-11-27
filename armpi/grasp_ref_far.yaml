@@ -14,4 +14,4 @@ J:
   - 8.17
 - - 2.86
   - -1.17
-grab_forward_mm: 0.5  # Sean: fixed-view grabs at ~148 mm came up short; 5 mm further out than -4.5
+grab_forward_mm: -1.0  # Sean: -4.5 came up short (fixed view), +0.5 "a tad over"
