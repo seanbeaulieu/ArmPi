@@ -183,5 +183,18 @@ def test_grab_tilt_real_model():
                       log=lambda *a: None)
     assert g.grab_tilt(95, -65) < grasp.MAX_TILT       # square centre: near vertical
     assert g.grab_tilt(109, -88) > 10                  # the far corner: the wrist tilts
-    fx, fy = g.fingers_at(109, -88)                    # ... and the tips go further out
-    assert math.hypot(fx, fy) > math.hypot(109, -88) + 1
+
+
+def test_ref_for_blends_near_and_far_by_distance():
+    near = {"box": [320, 320], "angle": 0.0, "J": [[0, 10], [13, 0]], "grab_forward_mm": 1.5,
+            "taught_at": [95.0, -65.0]}
+    far = {"box": [330, 370], "angle": 84.0, "J": [[0, 8], [3, 0]], "grab_forward_mm": 0.5,
+           "taught_at": [127.1, -86.9]}
+    g = grasp.Grasper(None, None, ref=near, log=lambda *a: None)
+    g.far = far
+    assert g.ref_for(95, -65)["box"] == pytest.approx([320, 320], abs=0.5)
+    assert g.ref_for(127.1, -86.9)["J"][1][0] == pytest.approx(3)
+    mid = g.ref_for(111, -76)                           # about halfway out
+    assert 320 < mid["box"][1] < 370 and 3 < mid["J"][1][0] < 13
+    assert -6 <= mid["angle"] <= 0                      # 0 -> 84 deg is -6 deg the short way
+    assert g.ref_for(200, -140)["box"] == pytest.approx([330, 370])  # clamped beyond far

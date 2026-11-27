@@ -14,4 +14,4 @@ J:
   - 8.17
 - - 2.86
   - -1.17
-grab_forward_mm: 1.5
+grab_forward_mm: 0.5  # first far grab (1.5 + 4.4 tilt shift) overshot 5-6 mm (Sean)

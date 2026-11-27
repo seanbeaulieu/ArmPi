@@ -29,6 +29,7 @@ import numpy as np
 import yaml
 
 REF_PATH = Path(__file__).with_name("grasp_ref.yaml")
+FAR_REF_PATH = Path(__file__).with_name("grasp_ref_far.yaml")
 PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
@@ -37,7 +38,8 @@ MAX_ANGLE = 25.0      # deg off square we still grab; 27-44 deg grabs hit corner
 MAX_TILT = 40.0       # deg from vertical the fingers may be at the grab. Past ~115 mm from the base the
                       # wrist must tilt to reach the table (links: 55 + 60 mm); fingers_at shifts the
                       # tips out so the pads, not the tips, land on the die. Untaught beyond ~20 deg.
-PAD_H = 6.0           # mm up the fingers where they meet the die (half its height)
+PAD_H = 0.0           # mm up the fingers where they meet the die. 6 (theory) overshot the far
+                      # grab by 5-6 mm; the far reference's grab_forward_mm carries the real offset
 MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few more steps
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
@@ -132,6 +134,8 @@ class Grasper:
     def __init__(self, skills, snapshot, ref=None, obj_h=12.0, save_dir=None, log=print):
         self.sk, self.snapshot, self.obj_h = skills, snapshot, obj_h
         self.ref = ref if ref is not None else load_ref()
+        # far reference (taught ~154 mm out, tilted wrist); only with the default near one
+        self.far = load_ref(FAR_REF_PATH) if ref is None else None
         self.save = Path(save_dir) if save_dir else None
         if self.save:
             self.save.mkdir(parents=True, exist_ok=True)
@@ -194,13 +198,30 @@ class Grasper:
         return ref
 
     # the grasp -------------------------------------------------------------------------------
+    def ref_for(self, x, y):
+        """The reference for a die lined up at (x, y): the near one, the far one, or a blend by
+        distance from the base in between (the look view, pixel gain and finger offset all
+        change as the wrist tilts further out: radial gain 13 px/mm near, ~3 px/mm far)."""
+        near, far = self.ref, self.far
+        if not far or not near:
+            return near
+        r0, r1 = math.hypot(*near["taught_at"]), math.hypot(*far["taught_at"])
+        t = min(max((math.hypot(x, y) - r0) / (r1 - r0), 0.0), 1.0)
+        mix = lambda a, b: a + t * (b - a)
+        return {"box": [mix(a, b) for a, b in zip(near["box"], far["box"])],
+                "J": [[mix(a, b) for a, b in zip(ra, rb)] for ra, rb in zip(near["J"], far["J"])],
+                "angle": near["angle"] + t * angle_off(far["angle"], near["angle"]),
+                "grab_forward_mm": mix(near.get("grab_forward_mm", 0.0),
+                                       far.get("grab_forward_mm", 0.0)),
+                "taught_at": [x, y]}
+
     def fingers_at(self, x, y):
         """Where the fingertips go down for a die lined up at (x, y): ref grab_forward_mm
         further from the base (first real grab closed on the die's back half), plus, when the
         wrist has to tilt to reach (far out), the shift that puts the finger PADS (PAD_H mm up
         the fingers) over the die instead of the tips: the tilted fingers lean back toward the
         base by PAD_H * tan(tilt)."""
-        f = (self.ref or {}).get("grab_forward_mm", 0.0)
+        f = (self.ref_for(x, y) or {}).get("grab_forward_mm", 0.0)
         rad, _ = gripper_frame(x, y)
         px, py = x + f * rad[0], y + f * rad[1]
         tilt = self._tilt_at(px, py) or 0.0
@@ -234,9 +255,9 @@ class Grasper:
     def line_up(self, x, y, tag="look"):
         """From the look pose, nudge until the die sits in the box. -> (d, x, y, err) with
         err None when lined up, else the reason."""
-        r = self.ref
         self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
         for i in range(MAX_NUDGES + 1):
+            r = self.ref_for(x, y)
             d = self.die_here(f"{tag}_{i}")
             if not d:
                 return None, x, y, "die not seen from the look pose"
@@ -268,7 +289,7 @@ class Grasper:
             d, x, y, err = self.line_up(x, y, f"look{k}")
             if err:
                 return d, x, y, off, err
-            off = angle_off(d["angle"], self.ref["angle"])
+            off = angle_off(d["angle"], self.ref_for(x, y)["angle"])
             if abs(off) <= SQUARE_TOL or k == MAX_SQUEEZES:
                 break
             self.log(f"  die {off:+.0f} deg off square: squeeze {k + 1}")
@@ -342,7 +363,7 @@ class Grasper:
         if d is None:
             note("check: die NOT seen at the destination")
             return
-        off = angle_off(d["angle"], self.ref["angle"])
+        off = angle_off(d["angle"], self.ref_for(*dst)["angle"])
         note(f"check: die seen at the destination, pixel ({d['u']:.0f}, {d['v']:.0f}), "
              f"{off:+.0f} deg off square")
 
