@@ -198,3 +198,36 @@ def test_ref_for_blends_near_and_far_by_distance():
     assert 320 < mid["box"][1] < 370 and 3 < mid["J"][1][0] < 13
     assert -6 <= mid["angle"] <= 0                      # 0 -> 84 deg is -6 deg the short way
     assert g.ref_for(200, -140)["box"] == pytest.approx([330, 370])  # clamped beyond far
+
+
+def test_view_calibration_round_trip(monkeypatch):
+    """Fake camera: the die's pixel is a perspective-ish function of where the die sits in
+    the camera pose's own frame. calibrate_view must invert it, and locate must find a die
+    anywhere in view from the fixed pose."""
+    monkeypatch.setattr(grasp, "_cv2", lambda: cv2)
+    sk = _FakeSkills()
+    pose = {"xy": (0.0, 0.0)}
+    sk._go = lambda xyz, ms: pose.update(xy=xyz[:2])
+    die = {"xy": (95.0, -65.0)}
+
+    def project(a, b):  # a: mm ahead of the camera pose, b: mm to its left
+        w = 1.0 + 0.004 * (a - 25)
+        return 320 - 9.8 * b / w, 323 - 13.0 * (a - 25) / w
+
+    def die_here(tag, allow_cut=False):
+        px, py = pose["xy"]
+        r, t = grasp.gripper_frame(px, py)
+        rel = np.array(die["xy"]) - np.array([px, py])
+        u, v = project(float(rel @ r), float(rel @ t))
+        return {"u": u, "v": v, "angle": 0.0, "size": 120}
+
+    g = grasp.Grasper(sk, snapshot=None, ref={"box": [320, 323], "angle": 0.0,
+                                              "J": [[0, 10], [13, 0]], "taught_at": [95, -65]},
+                      log=lambda *a: None)
+    g.die_here = die_here
+    view = g.calibrate_view(95, -65)
+    assert view["points"] == len(grasp.VIEW_GRID) and view["max_err_mm"] < 0.5
+    for target in [(95, -65), (110, -78), (125, -88), (92, -55)]:
+        die["xy"] = target
+        xy, _ = g.locate(95, -65)
+        assert math.dist(xy, target) < 1.0, (target, xy)

@@ -30,6 +30,10 @@ import yaml
 
 REF_PATH = Path(__file__).with_name("grasp_ref.yaml")
 FAR_REF_PATH = Path(__file__).with_name("grasp_ref_far.yaml")
+VIEW_PATH = Path(__file__).with_name("grasp_view.yaml")
+# camera offsets (radial, tangential mm) for calibrate_view: moving the camera back makes the
+# die look further out, so this covers dice ~-15..+40 mm radially, +-15 mm sideways
+VIEW_GRID = [(cr, ct) for cr in (15, 0, -15, -30, -40) for ct in (-15, 0, 15)]
 PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
@@ -92,6 +96,11 @@ def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150, allow_cut=False):
     return best
 
 
+def _apply_h(H, p):
+    q = H @ np.array([p[0], p[1], 1.0])
+    return float(q[0] / q[2]), float(q[1] / q[2])
+
+
 def angle_off(angle, ref_angle):
     """Smallest rotation (deg, -45..45) between two square orientations."""
     d = (angle - ref_angle) % 90
@@ -141,6 +150,7 @@ class Grasper:
         self.ref = ref if ref is not None else load_ref()
         # far reference (taught ~154 mm out, tilted wrist); only with the default near one
         self.far = load_ref(FAR_REF_PATH) if ref is None else None
+        self.view = load_ref(VIEW_PATH) if ref is None else None
         self.save = Path(save_dir) if save_dir else None
         if self.save:
             self.save.mkdir(parents=True, exist_ok=True)
@@ -342,16 +352,92 @@ class Grasper:
         self.sk.gripper(self.sk.open_frac)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
+    # --- fixed-view pick (camera always vertical, pixel -> mm map) ---------------------------
+    def view_pose(self, x, y):
+        """Fixed camera pose for a region centred at (x, y): the look pose for the centre, which
+        sits inside the vertical zone (~90 mm from the base), so the view never tilts."""
+        return self.look_pose(x, y)
+
+    def calibrate_view(self, x, y, offsets=VIEW_GRID):
+        """Die placed by hand under the fingers' grasp point at (x, y). Move the CAMERA over a
+        grid of offsets (radial, tangential mm around the view pose) and record where the die
+        shows up, then fit pixel -> die position in the camera pose's own frame
+        (a: away from the base, b: +90 deg), which is the same for every vertical view."""
+        cv2 = _cv2()
+        self.sk.gripper(self.sk.open_frac)
+        vx, vy = self.view_pose(x, y)
+        rad, tan = gripper_frame(x, y)
+        pix, ab = [], []
+        for cr, ct in offsets:
+            px, py = vx + cr * rad[0] + ct * tan[0], vy + cr * rad[1] + ct * tan[1]
+            self.sk._go((px, py, PREGRASP_Z), self.sk.slow_ms)
+            d = self.die_here(f"view_{cr:+.0f}_{ct:+.0f}")
+            if not d:
+                continue
+            r2, t2 = gripper_frame(px, py)
+            rel = np.array([x - px, y - py])
+            pix.append((d["u"], d["v"]))
+            ab.append((float(rel @ r2), float(rel @ t2)))
+        self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
+        if len(pix) < 6:
+            raise RuntimeError(f"die seen in only {len(pix)} of {len(offsets)} views")
+        H, _ = cv2.findHomography(np.array(pix, float), np.array(ab, float), 0)
+        err = [math.dist(_apply_h(H, p), q) for p, q in zip(pix, ab)]
+        view = {"H": np.asarray(H).round(8).tolist(), "z": PREGRASP_Z, "taught_at": [x, y],
+                "points": len(pix), "max_err_mm": round(max(err), 2),
+                "mean_err_mm": round(float(np.mean(err)), 2)}
+        self.view = view
+        return view
+
+    def locate(self, x, y, tag="view"):
+        """Photo from the fixed view for the region at (x, y) -> (die xy mm or None, detection)."""
+        vx, vy = self.view_pose(x, y)
+        self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
+        d = self.die_here(tag, allow_cut=True)
+        if d is None or d.get("cut"):
+            return None, d
+        a, b = _apply_h(np.asarray(self.view["H"]), (d["u"], d["v"]))
+        rad, tan = gripper_frame(vx, vy)
+        p = np.array([vx, vy]) + a * rad + b * tan
+        return (float(p[0]), float(p[1])), d
+
+    def pick_direct(self, x, y):
+        """Fixed view: one photo -> die position -> grab there -> look again from the same view.
+        -> (ok, reason, (x, y) grabbed at)."""
+        self.sk.gripper(self.sk.open_frac)
+        xy, d = self.locate(x, y)
+        if xy is None:
+            return False, ("die only partly in view (too close to the base)" if d else
+                           "die not seen from the view pose"), (x, y)
+        gx, gy = xy
+        self.log(f"  die at ({gx:.1f}, {gy:.1f}) mm, {math.hypot(gx, gy):.0f} mm from the base")
+        off = angle_off(d["angle"], self.ref_for(gx, gy)["angle"])
+        tilt = self.grab_tilt(gx, gy)
+        if tilt is None or tilt > MAX_TILT:
+            return False, (f"too far to grab: the fingers would be "
+                           + (f"{tilt:.0f} deg from vertical" if tilt is not None else "out of reach")
+                           + f" (max {MAX_TILT:.0f})"), (gx, gy)
+        if abs(off) > MAX_ANGLE:
+            return False, f"die is rotated {off:.0f} deg to the fingers; needs straightening", (gx, gy)
+        self._grab(gx, gy)
+        vx, vy = self.view_pose(x, y)
+        self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
+        if self.die_here("after_grab", allow_cut=True) is None:
+            return True, f"die picked up at ({gx:.0f}, {gy:.0f}) ({off:+.0f} deg off square)", (gx, gy)
+        self.sk.gripper(self.sk.open_frac)
+        return False, "grab missed (die still on the table)", (gx, gy)
+
     def move(self, src, dst):
         """Pick the die near src (x, y), place it at dst, look to confirm.
         -> (ok, log lines, photo bytes of the final look or None)."""
         log, say = [], self.log
         self.log = note = lambda m: (log.append(m), say(m))
         try:
-            ok, why, at = self.pick(*src)
+            pick = (lambda px, py: self.pick_direct(*src)) if self.view else self.pick
+            ok, why, at = pick(*src)
             note(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
             if not ok and "missed" in why:  # one retry from where the die is now
-                ok, why, _ = self.pick(*at)
+                ok, why, _ = pick(*at)
                 note(f"retry near ({at[0]:.0f}, {at[1]:.0f}): {why}")
             if ok:
                 self._finish_move(dst, note)
@@ -387,6 +473,7 @@ def main(argv=None):
     kept in grasp_ref.yaml between steps):
         python -m armpi.grasp pregrasp X Y     open gripper at the look pose for (X, Y), photo
         python -m armpi.grasp teach-box X Y    (die lined up by hand) record box + gain
+        python -m armpi.grasp teach-view X Y   (die under the fingers at X, Y) pixel -> mm map
         python -m armpi.grasp square X Y       line up + squeeze the die square, no pick
         python -m armpi.grasp pick X Y         full visual pick (stays holding at PREGRASP_Z)
         python -m armpi.grasp place X Y
@@ -394,7 +481,7 @@ def main(argv=None):
     """
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__.split("\n")[0])
-    ap.add_argument("step", choices=["pregrasp", "teach-box", "square", "pick", "place", "move"])
+    ap.add_argument("step", choices=["pregrasp", "teach-box", "teach-view", "square", "pick", "place", "move"])
     ap.add_argument("x")
     ap.add_argument("y")
     ap.add_argument("--url", default="http://10.0.0.133:8000")
@@ -420,6 +507,10 @@ def main(argv=None):
         g.ref = g.teach_box(a.x, a.y)
         save_ref(g.ref)
         print("saved", g.ref)
+    elif a.step == "teach-view":
+        v = g.calibrate_view(a.x, a.y)
+        save_ref(v, VIEW_PATH)
+        print("saved", {k: v[k] for k in ("points", "max_err_mm", "mean_err_mm")})
     elif a.step == "square":
         print(g.square_up(a.x, a.y)[3:])
     elif a.step == "pick":
