@@ -133,3 +133,20 @@ def test_pick_gives_up_when_squeezes_stall(monkeypatch):
     g, sk = _grasper([44, 44, 44])
     ok, why, _ = g.pick(95, -65)
     assert not ok and "rotated" in why
+
+
+def test_move_picks_places_and_confirms(monkeypatch):
+    g, sk = _grasper([4, None])  # pick: lined up + square, then gone from the source
+    monkeypatch.setattr(grasp, "find_die", lambda img: {"u": 300, "v": 310, "angle": 5, "size": 90})
+    monkeypatch.setattr(grasp, "_cv2", lambda: cv2)
+    g.photo = lambda tag, settle=0.6: np.zeros((48, 64, 3), np.uint8)
+    ok, log, jpg = g.move((95, -65), (95, 65))
+    assert ok and jpg and "die seen at the destination" in log[-1]
+    goes = [c[1] for c in sk.calls if c[0] == "go"]
+    assert any(abs(x - 95) < 1e-6 and abs(y - 65) < 1e-6 for x, y, _ in goes)  # went to dst
+
+
+def test_move_stops_when_the_pick_misses():
+    g, sk = _grasper([4, 4])  # die still there after the grab
+    ok, log, jpg = g.move((95, -65), (95, 65))
+    assert not ok and jpg is None and "missed" in log[-1]

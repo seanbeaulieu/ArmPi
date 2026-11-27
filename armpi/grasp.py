@@ -276,6 +276,33 @@ class Grasper:
         self.sk.gripper(self.sk.open_frac)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
+    def move(self, src, dst):
+        """Pick the die near src (x, y), place it at dst, look to confirm.
+        -> (ok, log lines, photo bytes of the final look or None)."""
+        log, say = [], self.log
+        self.log = lambda m: (log.append(m), say(m))
+        try:
+            ok, why, _ = self.pick(*src)
+        finally:
+            self.log = say
+        log.append(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
+        if not ok:
+            self.sk.gripper(self.sk.open_frac)
+            return False, log, None
+        self.place(*dst)
+        log.append(f"placed at ({dst[0]:.0f}, {dst[1]:.0f})")
+        self.pregrasp(*dst)
+        img = self.photo("check")
+        jpg = _cv2().imencode(".jpg", img)[1].tobytes()
+        d = find_die(img)
+        if d is None:
+            log.append("check: die NOT seen at the destination")
+            return False, log, jpg
+        off = angle_off(d["angle"], self.ref["angle"])
+        log.append(f"check: die seen at the destination, pixel ({d['u']:.0f}, {d['v']:.0f}), "
+                   f"{off:+.0f} deg off square")
+        return True, log, jpg
+
 
 def main(argv=None):
     """Step-by-step driver for the real arm (each step is its own process; the reference is
@@ -285,16 +312,25 @@ def main(argv=None):
         python -m armpi.grasp square X Y       line up + squeeze the die square, no pick
         python -m armpi.grasp pick X Y         full visual pick (stays holding at PREGRASP_Z)
         python -m armpi.grasp place X Y
+        python -m armpi.grasp move FROM TO     FROM/TO: a region (left, right) or X,Y
     """
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__.split("\n")[0])
-    ap.add_argument("step", choices=["pregrasp", "teach-box", "square", "pick", "place"])
-    ap.add_argument("x", type=float)
-    ap.add_argument("y", type=float)
+    ap.add_argument("step", choices=["pregrasp", "teach-box", "square", "pick", "place", "move"])
+    ap.add_argument("x")
+    ap.add_argument("y")
     ap.add_argument("--url", default="http://10.0.0.133:8000")
     ap.add_argument("--obj-h", type=float, default=12.0)
     ap.add_argument("--save-dir")
     a = ap.parse_args(argv)
+    if a.step == "move":
+        from .tools import REGIONS
+
+        def where(s):
+            return tuple(REGIONS[s]["center"]) if s in REGIONS else tuple(map(float, s.split(",")))
+        src, dst = where(a.x), where(a.y)
+    else:
+        a.x, a.y = float(a.x), float(a.y)
     from . import vision
     from .task import real_skills
     g = Grasper(real_skills(a.url), lambda: vision._get(a.url, "/snapshot.jpg"),
@@ -310,6 +346,9 @@ def main(argv=None):
         print(g.square_up(a.x, a.y)[3:])
     elif a.step == "pick":
         print(g.pick(a.x, a.y))
+    elif a.step == "move":
+        ok, log, _ = g.move(src, dst)
+        print("\n".join(log + ["DONE" if ok else "FAILED"]))
     else:
         g.place(a.x, a.y)
 

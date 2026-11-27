@@ -268,6 +268,10 @@ class ArmTools:
 
     def t_move_ball(self, args):
         src, dst = args["from"], args["to"]
+        if self.snapshot is not None:  # real arm: the die's visual grasp, once it's been taught
+            from .grasp import Grasper, load_ref
+            if load_ref():
+                return self._move_die(src, dst, args)
         log = []
         xy, info, jpg = self._locate(src)
         log.append(f"look {src}: {info}")
@@ -300,6 +304,17 @@ class ArmTools:
         self.skills.home()
         ok = xy3 is not None
         log.append("DONE: ball is in " + dst if ok else "WARNING: ball not seen in " + dst)
+        return [_text("\n".join(log))] + ([_img(jpg)] if jpg else [])
+
+    def _move_die(self, src, dst, args):
+        """Visual pick/place for the die (armpi.grasp): line up from behind, grab, carry, place,
+        look to confirm."""
+        from .grasp import Grasper
+        target = ((float(args["x"]), float(args["y"])) if "x" in args and "y" in args
+                  else tuple(self.regions[dst]["center"]))
+        g = Grasper(self.skills, self.snapshot, obj_h=self.obj_h, log=lambda m: None)
+        ok, log, jpg = g.move(tuple(self.regions[src]["center"]), target)
+        log.append(f"DONE: die is in {dst}" if ok else "FAILED (see above)")
         return [_text("\n".join(log))] + ([_img(jpg)] if jpg else [])
 
     def t_calibrate_look(self, args):
