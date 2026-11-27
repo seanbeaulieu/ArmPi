@@ -47,7 +47,7 @@ def _cv2():
 
 
 # --- vision (pure) ------------------------------------------------------------------------
-def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=100):
+def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150):
     """Biggest solid (saturated or much darker than the paper), squarish blob not cut off by
     the frame -> {"u", "v", "size", "angle", "fill"} or None. angle in [0, 90): the die's edge
     direction in the image (minAreaRect)."""
