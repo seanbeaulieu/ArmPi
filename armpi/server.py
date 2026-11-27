@@ -24,6 +24,10 @@ Stdlib only (plus opencv for the camera). No auth: anyone on the LAN can move th
     POST /api/rest             {"duration_ms": 1500}
     POST /api/calibrate        {"joint": "shoulder", "mark": "zero", "angle": 90}  see Calibrator
     GET  /api/vision/blocks    colored blocks in the wrist cam -> table xyz (see armpi/vision.py)
+    POST /api/task             {"name": "move", "from": "right", "to": "left"} etc. (armpi/tasks.py)
+    POST /api/task/stop        stop the running task after its current move
+    GET  /api/tasks            task runs (steps, pass/fail) + scene (where the die is)
+    GET  /api/task/photo.jpg   the last wrist-cam photo a task took
     GET  /stream.mjpg, /snapshot.jpg   (stream parts carry X-T: grab time on the /api/log clock)
 """
 import argparse
@@ -41,6 +45,7 @@ from .calibration import JOINTS, Calibration
 from .kinematics import LINKS, fk
 
 WEB = Path(__file__).with_name("web")
+MANUAL = ("/api/backend", "/api/move", "/api/move_to", "/api/pulse", "/api/rest", "/api/calibrate")
 
 
 class Camera:
@@ -156,6 +161,8 @@ class App:
         self.battery_cache = (-1e9, None, None)  # (time, mv, source)
         self.calibrator = Calibrator(None)
         self.servo_to_joint = {calib.servo(j): j for j in JOINTS}
+        from .tasks import TaskRunner
+        self.tasks = TaskRunner(self)
         self.use(backend)
         if sample:
             threading.Thread(target=self._sampler, daemon=True).start()
@@ -245,7 +252,8 @@ class App:
                 "pulses": pulses, "fk": _fk(live), "target_fk": _fk(commanded),
                 "actual_fk": _fk(actual) if actual else None,
                 "battery_mv": battery, "battery_source": source, "board_error": self.board_error,
-                "joints": JOINTS, "calibration": self.calib.joints, "links": LINKS}
+                "joints": JOINTS, "calibration": self.calib.joints, "links": LINKS,
+                "scene": self.tasks.scene()}
 
     def _actual_angles(self):
         """Physics sim only: where the joints really are (sag, lag, torque limits)."""
@@ -317,6 +325,13 @@ class App:
 
     def _post(self, path, body):
         d = body.get("duration_ms")
+        if path == "/api/task":
+            return self.tasks.start(body)
+        if path == "/api/task/stop":
+            return self.tasks.stop()
+        if self.tasks.running is not None and path in MANUAL:
+            raise ValueError(f"task {self.tasks.running['name']} #{self.tasks.running['id']} is "
+                             f"running: stop it first")
         if path == "/api/backend":
             self.use(body["name"])
             return {"backend": self.backend_name}
@@ -401,6 +416,11 @@ def make_handler(app):
                 with app.lock:
                     mv, source = app._battery()
                 return self._send(200, {"battery_mv": mv, "source": source})
+            if path == "/api/tasks":
+                return self._send(200, app.tasks.listing())
+            if path == "/api/task/photo.jpg":
+                jpg = app.tasks.photo
+                return self._send(200, jpg, "image/jpeg") if jpg else self._send(404, {"error": "no task photo yet"})
             if path == "/api/vision/blocks":
                 return self._send(*vision_blocks(app))
             if path == "/snapshot.jpg":

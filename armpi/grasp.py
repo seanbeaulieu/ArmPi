@@ -167,6 +167,8 @@ class Grasper:
             self.save.mkdir(parents=True, exist_ok=True)
         self.log = log
         self.n = 0
+        self.on_die = lambda xy, status: None  # scene hook: die xy (mm) or None, status text
+        self.last_jpg = None
 
     def grip_z(self):
         return max(self.obj_h - self.sk.grip_depth, GRIP_MIN_Z)
@@ -174,7 +176,7 @@ class Grasper:
     def photo(self, tag, settle=0.6):
         cv2 = _cv2()
         self.sk.wait(settle)
-        jpg = self.snapshot()
+        jpg = self.last_jpg = self.snapshot()
         if self.save:
             (self.save / f"{self.n:02d}_{tag}.jpg").write_bytes(jpg)
         self.n += 1
@@ -436,10 +438,12 @@ class Grasper:
                 self.log(f"  {a:.0f} mm ahead: near the edge of the map, checking the view further out")
                 continue
             xy, d, self.view_used = reading
+            self.on_die(xy, "on the table")
             return xy, d
         if edge is None:
             return None, d
         xy, d, self.view_used = edge
+        self.on_die(xy, "on the table")
         return xy, d
 
     def pick_direct(self, x, y):
@@ -464,6 +468,7 @@ class Grasper:
         vx, vy = self.view_used
         self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
         if self.die_here("after_grab", allow_cut=True) is None:
+            self.on_die(None, "held")
             return True, f"die picked up at ({gx:.0f}, {gy:.0f}) ({off:+.0f} deg off square)", (gx, gy)
         self.sk.gripper(self.sk.open_frac)
         return False, "grab missed (die still on the table)", (gx, gy)
@@ -492,6 +497,21 @@ class Grasper:
     def _finish_move(self, dst, note):
         self.place(*dst)
         note(f"placed at ({dst[0]:.0f}, {dst[1]:.0f})")
+        self.on_die(dst, "placed (unchecked)")
+        if self.view:  # check from the fixed views: also tells where it landed
+            xy, d = self.locate(*dst, tag="check")
+            self._jpg = self.last_jpg
+            self._result = xy is not None or bool(d)
+            if xy is not None:
+                off = angle_off(d["angle"], self.ref_for(*xy)["angle"])
+                note(f"check: die at the destination, ({xy[0]:.0f}, {xy[1]:.0f}) mm, "
+                     f"{math.dist(xy, dst):.0f} mm from the target, {off:+.0f} deg off square")
+            elif d:
+                note("check: die at the destination, partly in view (near the base)")
+            else:
+                note("check: die NOT seen at the destination")
+                self.on_die(None, "lost")
+            return
         self.pregrasp(*dst)
         img = self.photo("check")
         self._jpg = _cv2().imencode(".jpg", img)[1].tobytes()

@@ -1,6 +1,7 @@
 """End-to-end: armpi.server on the sim backend, driven over HTTP by RemoteBackend.
 Run: python tests/test_server.py   (no hardware, no camera needed)"""
 import json
+import time
 import os
 import shutil
 import sys
@@ -190,6 +191,55 @@ def test_sim_backend_shares_calibration():
         return made[-1]
     app = App(Calibration.load(CAL_PATH), NoCamera(), "sim", factory)
     assert made and made[0].calib is app.calib
+
+
+def test_tasks_validate_run_and_report():
+    # a server whose "real arm" is a sim we can inspect, so tasks can run in tests
+    board = SimBackend()
+    srv, app, url, _ = start_server(lambda n: board if n == "i2c" else SimBackend())
+
+    def tpost(path, body):
+        req = urllib.request.Request(url + path, json.dumps(body).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    assert tpost("/api/task", {"name": "dance"})[0] == 400
+    assert tpost("/api/task", {"name": "move", "from": "right"})[0] == 400
+    code, run = tpost("/api/task", {"name": "home"})
+    assert code == 200 and run["status"] == "running"
+    for _ in range(100):
+        runs = json.loads(urllib.request.urlopen(url + "/api/tasks").read())
+        if runs["running"] is None:
+            break
+        time.sleep(0.1)
+    last = runs["runs"][-1]
+    assert last["status"] == "pass" and last["steps"][-1]["text"].startswith("PASS")
+    assert app.backend_name == "i2c" and board.history          # it drove the "real" arm
+    state = json.loads(urllib.request.urlopen(url + "/api/state").read())
+    assert "die" in state["scene"] and "right" in state["scene"]["regions"]
+    log = json.loads(urllib.request.urlopen(url + "/api/log?since=-1").read())["items"]
+    assert any(e["kind"] == "task" for e in log)
+    srv.shutdown()
+
+
+def test_manual_moves_blocked_while_a_task_runs():
+    srv, app, url, _ = start_server()
+    app.tasks.running = {"id": 9, "name": "move"}  # pretend
+    try:
+        req = urllib.request.Request(url + "/api/move", json.dumps({"angles": {"base": 5}}).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            assert False, "move should be refused"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400 and "running" in json.loads(e.read())["error"]
+    finally:
+        app.tasks.running = None
+        srv.shutdown()
 
 
 if __name__ == "__main__":

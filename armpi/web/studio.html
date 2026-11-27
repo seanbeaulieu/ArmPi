@@ -72,6 +72,26 @@
   #msg { color:var(--mute); min-height:1.4em; margin-top:6px; }
   #msg.err { color:var(--warn); }
   .empty { color:var(--mute); font-style:italic; }
+  :root { --die:#2f4fd8; }
+  @media (prefers-color-scheme: dark) { :root { --die:#7b93ff; } }
+  .taskbtns { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px; }
+  .taskbtns button.big { grid-column:span 2; }
+  .taskbtns button:disabled { opacity:.45; cursor:default; }
+  .tstat { display:flex; gap:10px; align-items:center; margin:8px 0 4px; color:var(--mute); flex-wrap:wrap; }
+  .tstat b { color:var(--ink); font-weight:600; }
+  #t_photo { width:100%; border-radius:6px; border:1px solid var(--line); display:none; margin-top:6px; }
+  #runs { max-height:260px; overflow:auto; margin-top:6px; }
+  .run { border-top:1px solid var(--grid); padding:5px 0; cursor:pointer; }
+  .run .hd { display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:center; }
+  .run .res { color:var(--mute); font-size:12px; margin-top:2px; }
+  .run ol { margin:4px 0 2px; padding-left:20px; font-family:ui-monospace,monospace; font-size:11.5px; color:var(--mute); display:none; }
+  .run.open ol { display:block; }
+  .badge { font-size:11px; font-weight:600; padding:1px 7px; border-radius:99px; border:1px solid; text-transform:uppercase; letter-spacing:.04em; }
+  .badge.pass { color:var(--ok); border-color:var(--ok); }
+  .badge.fail { color:var(--warn); border-color:var(--warn); }
+  .badge.running { color:var(--accent); border-color:var(--accent); }
+  .badge.stopped { color:var(--mute); border-color:var(--mute); }
+  .tally { color:var(--mute); }
 </style>
 </head>
 <body>
@@ -129,6 +149,23 @@
       <div id="joints"></div>
       <div class="legend"><span><span class="sw" style="border-color:var(--cmd)"></span>commanded</span>
         <span>● actual</span><span>grey bar = calibration limits · drag a bar to move</span></div>
+    </section>
+    <section>
+      <h2>Die tasks (real arm) <span class="sp"></span><span class="tally" id="t_tally"></span><button id="t_stop">stop</button></h2>
+      <div class="taskbtns">
+        <button class="big" data-task='{"name":"move","from":"right","to":"left"}'>Move die right → left</button>
+        <button class="big" data-task='{"name":"move","from":"left","to":"right"}'>Move die left → right</button>
+        <button data-task='{"name":"locate","region":"right"}'>Locate in right</button>
+        <button data-task='{"name":"locate","region":"left"}'>Locate in left</button>
+        <button data-task='{"name":"pick","region":"right"}'>Pick from right</button>
+        <button data-task='{"name":"pick","region":"left"}'>Pick from left</button>
+        <button data-task='{"name":"place","region":"right"}'>Place in right</button>
+        <button data-task='{"name":"place","region":"left"}'>Place in left</button>
+        <button class="big" data-task='{"name":"home"}'>Home (rest pose)</button>
+      </div>
+      <div class="tstat"><span>now: <b id="t_now">idle</b></span><span>die: <b id="t_die">unknown</b></span></div>
+      <img id="t_photo" alt="last wrist-cam photo from a task">
+      <div id="runs"><div class="empty">no tasks yet</div></div>
     </section>
     <section>
       <h2>Event log <span class="sp"></span><button id="b_clear">clear</button></h2>
@@ -277,6 +314,7 @@ function draw() {
   const bh = L.base_height, b = 45;
   for (const z of [0, bh]) poly([[b, b, z], [-b, b, z], [-b, -b, z], [b, -b, z], [b, b, z]], css('--line'), 1.5);
   for (const [x, y] of [[b, b], [-b, b], [-b, -b], [b, -b]]) line([x, y, 0], [x, y, bh], css('--line'), 1.5);
+  drawScene(L);
   // reach envelope: max fingertip reach circle at table height and at the clicked height
   if ($('o_env').checked) {
     const reach = L.upper_arm + L.forearm + L.wrist_to_gripper + L.fingers;
@@ -303,6 +341,7 @@ function draw() {
     poly([Pa.shoulder, Pa.elbow, Pa.wrist, Pa.tip].map(sh), null, 1, null, null);
     for (const [s, e] of [['shoulder', 'elbow'], ['elbow', 'wrist'], ['wrist', 'tip']]) line(sh(Pa[s]), sh(Pa[e]), grid, 4);
     drawArm(Pa, act, css('--act'), 4, null, true);
+    if (S.scene && S.scene.die.status === 'held') drawDie([Pa.tip[0], Pa.tip[1]], Pa.tip[2] - 2, 'held');
     text(Pa.tip, Pa.tip.map(v => v.toFixed(0)).join(', '), mute);
   }
   if (!Pa && !Pc) { cx.fillStyle = mute; cx.fillText('pose unknown: move the arm (rest) to start', 16, 22); }
@@ -455,6 +494,83 @@ function drawPlots() {
     e.className = 'err' + (err != null && err > (j === 'gripper' ? 0.1 : 3) ? ' hi' : '');
   }
 }
+
+// ---------- scene: target regions and the die ----------
+const DIE = 14;  // mm, the blue die
+function drawDie(xy, z0, status) {
+  const h = DIE / 2, [x, y] = xy, c = css('--die');
+  const yaw = Math.atan2(y, x);  // drawn square to the fingers (its real yaw isn't tracked in 3D)
+  const co = Math.cos(yaw), si = Math.sin(yaw);
+  const pt = (u, v, z) => [x + u * co - v * si, y + u * si + v * co, z];
+  const sq = z => [pt(h, h, z), pt(-h, h, z), pt(-h, -h, z), pt(h, -h, z), pt(h, h, z)];
+  const z1 = z0 + DIE;
+  cx.globalAlpha = status === 'placed (unchecked)' ? 0.45 : 0.9;
+  poly(sq(z0), c, 1.5, null, c);
+  for (const [u, v] of [[h, h], [-h, h], [-h, -h], [h, -h]]) line(pt(u, v, z0), pt(u, v, z1), c, 1.5);
+  poly(sq(z1), c, 1.5, null, c);
+  cx.globalAlpha = 1;
+  text(pt(h, h, z1), status === 'held' ? 'die (held)' : 'die', c);
+}
+function drawScene(L) {
+  const sc = S.scene; if (!sc) return;
+  const mute = css('--mute');
+  for (const [name, r] of Object.entries(sc.regions)) {
+    const [x0, y0] = r.center, h = r.size / 2;
+    const yaw = Math.atan2(y0, x0), co = Math.cos(yaw), si = Math.sin(yaw);
+    const pt = (u, v) => [x0 + u * co - v * si, y0 + u * si + v * co, 0];
+    poly([pt(h, h), pt(-h, h), pt(-h, -h), pt(h, -h), pt(h, h)], css('--accent'), 1.5, [6, 4]);
+    text(pt(h, h), name, mute);
+  }
+  const d = sc.die;
+  if (d.xy && d.status !== 'held') drawDie(d.xy, 0, d.status);
+}
+
+// ---------- die tasks ----------
+let T = null, lastPhotoAt = 0;
+const openRuns = new Set();
+document.querySelectorAll('[data-task]').forEach(b => b.onclick = async () => {
+  try { await api('/api/task', JSON.parse(b.dataset.task)); say(''); pollTasks(); }
+  catch (e) { say(e.message, true); }
+});
+$('t_stop').onclick = () => act('/api/task/stop', {});
+async function pollTasks() {
+  try { T = await api('/api/tasks'); } catch (e) { return; }
+  const running = T.runs.find(r => r.id === T.running);
+  $('t_now').textContent = running
+    ? `${running.name} #${running.id}: ${(running.steps[running.steps.length - 1] || {}).text || 'starting'}` : 'idle';
+  const d = T.scene.die;
+  $('t_die').textContent = d.xy ? `${d.status} at (${d.xy[0].toFixed(0)}, ${d.xy[1].toFixed(0)}) mm` : d.status;
+  const done = T.runs.filter(r => r.status === 'pass' || r.status === 'fail');
+  $('t_tally').textContent = done.length ? `${done.filter(r => r.status === 'pass').length}/${done.length} passed` : '';
+  document.querySelectorAll('[data-task]').forEach(b => b.disabled = !!T.running);
+  const box = $('runs');
+  if (T.runs.length) {
+    box.innerHTML = '';
+    for (const r of [...T.runs].reverse()) {
+      const el = document.createElement('div');
+      el.className = 'run' + (openRuns.has(r.id) || r.id === T.running ? ' open' : '');
+      const end = r.ended != null ? r.ended : (S ? S.t : r.started);
+      el.innerHTML = `<div class="hd"><span class="badge ${r.status}">${r.status}</span>` +
+        `<span><b>#${r.id} ${r.name}</b> <span class="tally"></span></span>` +
+        `<span class="tally">${Math.max(0, end - r.started).toFixed(0)} s</span></div><div class="res"></div><ol></ol>`;
+      el.querySelector('.hd .tally').textContent = Object.values(r.args).join(' → ');
+      el.querySelector('.res').textContent = r.result || '';
+      const ol = el.querySelector('ol');
+      for (const st of r.steps) { const li = document.createElement('li'); li.textContent = st.text; ol.appendChild(li); }
+      el.onclick = () => { openRuns.has(r.id) ? openRuns.delete(r.id) : openRuns.add(r.id); el.classList.toggle('open'); };
+      box.appendChild(el);
+    }
+  }
+  // the last wrist-cam photo: refreshed while a task runs, and now and then after
+  const now = Date.now();
+  if (now - lastPhotoAt > (T.running ? 900 : 5000)) {
+    lastPhotoAt = now;
+    const img = $('t_photo'), probe = new Image();
+    probe.onload = () => { img.src = probe.src; img.style.display = 'block'; };
+    probe.src = '/api/task/photo.jpg?' + now;
+  }
+}
+setInterval(pollTasks, 500);
 
 // ---------- log ----------
 function addLog(items) {
