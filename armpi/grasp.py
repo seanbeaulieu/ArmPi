@@ -41,6 +41,9 @@ VIEW_A_GOOD = 48.0                # beyond this the map is near its edge: prefer
 VIEW_GRID = [(cr, ct) for cr in (15, 0, -15, -30, -40) for ct in (-15, 0, 15)]
 PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
+GRAB_Z = 6.0          # close with the tips this high (real mm): on the way down the real tips swing out
+                      # (kinematic model off), so lower = further out; Sean: the release pose, a bit up
+                      # and back, is where they should close
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 15       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square we still grab; 27-44 deg grabs hit corners and pushed the die
@@ -276,7 +279,7 @@ class Grasper:
         """From the look pose: forward to above (x, y), straight down, close, back up."""
         x, y = self.fingers_at(x, y)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
-        self.sk._go((x, y, self.grip_z()), self.sk.slow_ms)
+        self.sk._go((x, y, max(self.grip_z(), GRAB_Z)), self.sk.slow_ms)
         self.sk.gripper(0.0)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
