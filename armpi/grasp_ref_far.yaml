@@ -14,4 +14,4 @@ J:
   - 8.17
 - - 2.86
   - -1.17
-grab_forward_mm: -4.5  # Sean: 1.5+4.4 overshot 5-6 mm, then 0.5 still overshot ~5 mm
+grab_forward_mm: 0.5  # Sean: fixed-view grabs at ~148 mm came up short; 5 mm further out than -4.5

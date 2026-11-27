@@ -34,7 +34,8 @@ VIEW_PATH = Path(__file__).with_name("grasp_view.yaml")
 # camera offsets (radial, tangential mm) for calibrate_view: moving the camera back makes the
 # die look further out, so this covers dice ~-15..+40 mm radially, +-15 mm sideways
 VIEW_SHIFTS = (0.0, 20.0, -20.0)  # extra camera poses (mm out from the centre view), all vertical
-VIEW_A_RANGE = (18.0, 60.0)       # mm ahead of the camera pose the fitted map covers (+ margin)
+VIEW_A_RANGE = (18.0, 60.0)
+VIEW_A_GOOD = 48.0                # beyond this the map is near its edge: prefer the view further out       # mm ahead of the camera pose the fitted map covers (+ margin)
 VIEW_GRID = [(cr, ct) for cr in (15, 0, -15, -30, -40) for ct in (-15, 0, 15)]
 PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
@@ -399,8 +400,10 @@ class Grasper:
         -> (die xy or None, last detection)."""
         rad, tan = gripper_frame(x, y)
         cx, cy = self.view_pose(x, y)
-        d = None
+        d, edge = None, None
         for k, shift in enumerate(VIEW_SHIFTS):
+            if edge is not None and shift <= 0:
+                break  # had an edge reading; only the view further out could do better
             vx, vy = cx + shift * rad[0], cy + shift * rad[1]
             self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
             d = self.die_here(f"{tag}{k}", allow_cut=True)
@@ -412,9 +415,17 @@ class Grasper:
                 continue
             r2, t2 = gripper_frame(vx, vy)
             p = np.array([vx, vy]) + a * r2 + b * t2
-            self.view_used = (vx, vy)
-            return (float(p[0]), float(p[1])), d
-        return None, d
+            reading = ((float(p[0]), float(p[1])), d, (vx, vy))
+            if a > VIEW_A_GOOD and shift <= 0 and edge is None:
+                edge = reading  # near the far edge of this view's map: try the view further out
+                self.log(f"  {a:.0f} mm ahead: near the edge of the map, checking the view further out")
+                continue
+            xy, d, self.view_used = reading
+            return xy, d
+        if edge is None:
+            return None, d
+        xy, d, self.view_used = edge
+        return xy, d
 
     def pick_direct(self, x, y):
         """Fixed view: one photo -> die position -> grab there -> look again from the same view.
