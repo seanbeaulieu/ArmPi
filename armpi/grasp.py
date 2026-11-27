@@ -189,8 +189,16 @@ class Grasper:
         return ref
 
     # the grasp -------------------------------------------------------------------------------
+    def fingers_at(self, x, y):
+        """Where the fingertips go down for a die lined up at (x, y): ref grab_forward_mm
+        further from the base (first real grab closed on the die's back half)."""
+        f = (self.ref or {}).get("grab_forward_mm", 0.0)
+        rad, _ = gripper_frame(x, y)
+        return x + f * rad[0], y + f * rad[1]
+
     def _grab(self, x, y):
         """From the look pose: forward to above (x, y), straight down, close, back up."""
+        x, y = self.fingers_at(x, y)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
         self.sk._go((x, y, self.grip_z()), self.sk.slow_ms)
         self.sk.gripper(0.0)
@@ -218,6 +226,7 @@ class Grasper:
     def squeeze(self, x, y):
         """Open fingers down around the die, close slowly (turns it square to the jaws), open,
         back up. The die stays on the table."""
+        x, y = self.fingers_at(x, y)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
         self.sk._go((x, y, self.grip_z()), self.sk.slow_ms)
         self.sk.gripper(0.0, SQUEEZE_MS)
