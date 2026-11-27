@@ -143,7 +143,7 @@ def test_move_picks_places_and_confirms(monkeypatch):
     ok, log, jpg = g.move((95, -65), (95, 65))
     assert ok and jpg and "die seen at the destination" in log[-1]
     goes = [c[1] for c in sk.calls if c[0] == "go"]
-    assert any(math.dist((x, y), (95, 65)) <= grasp.PLACE_FORWARD_MM + 0.2 and z < 10
+    assert any(math.dist((x, y), (95, 65)) <= abs(grasp.PLACE_FORWARD_MM) + 0.2 and z < 10
                for x, y, z in goes)  # set it down at dst (plus the place offset)
 
 
