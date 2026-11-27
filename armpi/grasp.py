@@ -34,8 +34,10 @@ LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it 
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 15       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square we still grab; 27-44 deg grabs hit corners and pushed the die
-MAX_TILT = 8.0        # deg from vertical the fingers may be at the grab; further out (shoulder at its
-                      # 0 deg limit) the wrist tilts and the pads shove the die (r ~133-140 mm: 15-20 deg)
+MAX_TILT = 40.0       # deg from vertical the fingers may be at the grab. Past ~115 mm from the base the
+                      # wrist must tilt to reach the table (links: 55 + 60 mm); fingers_at shifts the
+                      # tips out so the pads, not the tips, land on the die. Untaught beyond ~20 deg.
+PAD_H = 6.0           # mm up the fingers where they meet the die (half its height)
 MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few more steps
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
@@ -194,23 +196,32 @@ class Grasper:
     # the grasp -------------------------------------------------------------------------------
     def fingers_at(self, x, y):
         """Where the fingertips go down for a die lined up at (x, y): ref grab_forward_mm
-        further from the base (first real grab closed on the die's back half)."""
+        further from the base (first real grab closed on the die's back half), plus, when the
+        wrist has to tilt to reach (far out), the shift that puts the finger PADS (PAD_H mm up
+        the fingers) over the die instead of the tips: the tilted fingers lean back toward the
+        base by PAD_H * tan(tilt)."""
         f = (self.ref or {}).get("grab_forward_mm", 0.0)
         rad, _ = gripper_frame(x, y)
-        return x + f * rad[0], y + f * rad[1]
+        px, py = x + f * rad[0], y + f * rad[1]
+        tilt = self._tilt_at(px, py) or 0.0
+        k = PAD_H * math.tan(math.radians(tilt))
+        return px + k * rad[0], py + k * rad[1]
 
-    def grab_tilt(self, x, y):
-        """Degrees from vertical the fingers would be at, grabbing a die lined up at (x, y);
+    def _tilt_at(self, fx, fy):
+        """Degrees from vertical the fingers are at with the tips at (fx, fy) at grab height;
         None if out of reach. (No arm model, e.g. a test double: 0.)"""
         arm = getattr(self.sk, "arm", None)
         if arm is None or not hasattr(self.sk, "cmd_z"):
             return 0.0
         from .calibration import JOINTS
         from .kinematics import ik_search
-        fx, fy = self.fingers_at(x, y)
         limits = {j: arm.calib.limits(j) for j in JOINTS if j != "gripper"}
         sol = ik_search((fx, fy, self.sk.cmd_z(self.grip_z())), self.sk.pitch, limits)
         return None if sol is None else abs(sol[1] + 90.0)
+
+    def grab_tilt(self, x, y):
+        """Tilt from vertical (deg) of the grab for a die lined up at (x, y); None if out of reach."""
+        return self._tilt_at(*self.fingers_at(x, y))
 
     def _grab(self, x, y):
         """From the look pose: forward to above (x, y), straight down, close, back up."""

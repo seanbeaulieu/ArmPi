@@ -163,7 +163,7 @@ def test_knocked_die_counts_as_missed_and_is_retried(monkeypatch):
 
 def test_pick_refuses_when_the_fingers_would_tilt(monkeypatch):
     g, sk = _grasper([4])
-    monkeypatch.setattr(g, "grab_tilt", lambda x, y: 17.0)
+    monkeypatch.setattr(g, "grab_tilt", lambda x, y: grasp.MAX_TILT + 5)
     ok, why, _ = g.pick(105, -82)
     assert not ok and "too far" in why
     assert not [c for c in sk.calls if c[0] == "grip" and c[1] == 0.0]  # never closed
@@ -182,4 +182,6 @@ def test_grab_tilt_real_model():
     g = grasp.Grasper(sk, snapshot=None, ref={"box": [0, 0], "angle": 0, "J": [[1, 0], [0, 1]]},
                       log=lambda *a: None)
     assert g.grab_tilt(95, -65) < grasp.MAX_TILT       # square centre: near vertical
-    assert g.grab_tilt(109, -88) > grasp.MAX_TILT      # the far corner that failed
+    assert g.grab_tilt(109, -88) > 10                  # the far corner: the wrist tilts
+    fx, fy = g.fingers_at(109, -88)                    # ... and the tips go further out
+    assert math.hypot(fx, fy) > math.hypot(109, -88) + 1
