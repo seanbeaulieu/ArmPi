@@ -33,7 +33,8 @@ FAR_REF_PATH = Path(__file__).with_name("grasp_ref_far.yaml")
 VIEW_PATH = Path(__file__).with_name("grasp_view.yaml")
 # camera offsets (radial, tangential mm) for calibrate_view: moving the camera back makes the
 # die look further out, so this covers dice ~-15..+40 mm radially, +-15 mm sideways
-VIEW_SHIFTS = (0.0, 20.0, -20.0)  # extra camera poses (mm out from the centre view), all vertical
+VIEW_SHIFTS = (0.0, 20.0, -10.0)  # camera poses (mm out from the centre view), all vertical
+                                  # (-20 put the camera 70 mm out: elbow at its limit, 7 deg tilt)
 VIEW_A_RANGE = (18.0, 60.0)
 VIEW_A_GOOD = 48.0                # beyond this the map is near its edge: prefer the view further out       # mm ahead of the camera pose the fitted map covers (+ margin)
 VIEW_GRID = [(cr, ct) for cr in (15, 0, -15, -30, -40) for ct in (-15, 0, 15)]
@@ -51,6 +52,7 @@ MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few mor
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
                       # a plain fast close + lift squared it enough (Sean, 2026-11-27)
+PLACE_FORWARD_MM = 4.0  # place this much further out than asked (the die sits behind the tips)
 RELEASE_FRAC = 0.5    # place: open this far, slowly, before lifting away
 RELEASE_MS = 800
 SQUEEZE_MS = 1500     # slow close, so the die turns instead of popping out
@@ -355,6 +357,8 @@ class Grasper:
         """Gentle set-down: lower until the die (almost) touches, open slowly and only partway
         (a fast full open flicked it: it twisted 7 -> 29 deg over two places), lift clear, then
         open fully."""
+        rad, _ = gripper_frame(x, y)  # held behind the tips: dice landed 2-8 mm short
+        x, y = x + PLACE_FORWARD_MM * rad[0], y + PLACE_FORWARD_MM * rad[1]
         self.sk._go((x, y, PREGRASP_Z), self.sk.move_ms)
         self.sk._go((x, y, self.grip_z() + drop), self.sk.slow_ms)
         self.sk.gripper(RELEASE_FRAC, RELEASE_MS)
@@ -401,7 +405,7 @@ class Grasper:
 
     def locate(self, x, y, tag="view"):
         """Die position (mm) for the region at (x, y) from the fixed vertical views: the
-        centre view, then one 20 mm further out, then one 20 mm further in. The pixel -> mm
+        centre view, then one 20 mm further out, then one 10 mm further in. The pixel -> mm
         map is in the camera pose's own frame, so it holds for any vertical view; a reading
         counts only inside the range the map was fitted on (VIEW_A_RANGE ahead, +-18 mm side).
         -> (die xy or None, last detection)."""
