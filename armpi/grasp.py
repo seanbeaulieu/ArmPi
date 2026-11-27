@@ -54,10 +54,11 @@ def _cv2():
 
 
 # --- vision (pure) ------------------------------------------------------------------------
-def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150):
+def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150, allow_cut=False):
     """Biggest solid (saturated or much darker than the paper), squarish blob not cut off by
     the frame -> {"u", "v", "size", "angle", "fill"} or None. angle in [0, 90): the die's edge
-    direction in the image (minAreaRect)."""
+    direction in the image (minAreaRect). allow_cut: also a die cut off by the BOTTOM edge
+    (just in front of the fingers) -> {"u", "v", "size", "cut": True}; only says it's there."""
     cv2 = _cv2()
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     H, W = hsv.shape[:2]
@@ -72,7 +73,11 @@ def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150):
     best = None
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
-        if x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1:
+        if x <= 1 or y <= 1 or x + w >= W - 1:
+            continue
+        if y + h >= H - 1:  # cut off by the bottom edge
+            if allow_cut and best is None and 60 <= w <= 0.6 * W and h >= 25                     and cv2.contourArea(c) > 0.6 * w * h:
+                best = {"u": x + w / 2, "v": float(y + h / 2), "size": float(w), "cut": True}
             continue
         (u, vv), (rw, rh), ang = cv2.minAreaRect(c)
         side = (rw + rh) / 2
@@ -81,7 +86,7 @@ def find_die(bgr, min_side=20, dark_frac=0.5, min_sat=150):
         fill = cv2.contourArea(c) / max(rw * rh, 1.0)
         if fill < 0.6:
             continue
-        if best is None or side > best["size"]:
+        if best is None or best.get("cut") or side > best["size"]:
             best = {"u": float(u), "v": float(vv), "size": float(side), "angle": float(ang % 90),
                     "fill": float(fill)}
     return best
@@ -164,10 +169,15 @@ class Grasper:
         self.sk.gripper(self.sk.open_frac)
         self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.move_ms)
 
-    def die_here(self, tag):
-        d = find_die(self.photo(tag))
-        self.log(f"{tag}: " + (f"die at pixel ({d['u']:.0f}, {d['v']:.0f}) size {d['size']:.0f} "
-                               f"angle {d['angle']:.0f}" if d else "no die"))
+    def die_here(self, tag, allow_cut=False):
+        d = find_die(self.photo(tag), allow_cut=allow_cut)
+        if d is None:
+            self.log(f"{tag}: no die")
+        elif d.get("cut"):
+            self.log(f"{tag}: die partly in view at the bottom, pixel ({d['u']:.0f}, {d['v']:.0f})")
+        else:
+            self.log(f"{tag}: die at pixel ({d['u']:.0f}, {d['v']:.0f}) size {d['size']:.0f} "
+                     f"angle {d['angle']:.0f}")
         return d
 
     # one-time teaching -----------------------------------------------------------------------
@@ -317,7 +327,7 @@ class Grasper:
         self._grab(x, y)
         # held check: the die must be gone from where it was (in the fingers, out of frame)
         self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
-        d = self.die_here("after_grab")
+        d = self.die_here("after_grab", allow_cut=True)  # a die just in front counts too
         if d is None:  # any die still in view = on the table (a knocked die lands elsewhere)
             return True, f"die picked up (it was {off:+.0f} deg off square)", (x, y)
         self.sk.gripper(self.sk.open_frac)
@@ -358,10 +368,14 @@ class Grasper:
         self.pregrasp(*dst)
         img = self.photo("check")
         self._jpg = _cv2().imencode(".jpg", img)[1].tobytes()
-        d = find_die(img)
+        d = find_die(img, allow_cut=True)  # just in front of the fingers is still "there"
         self._result = d is not None
         if d is None:
             note("check: die NOT seen at the destination")
+            return
+        if d.get("cut"):
+            note(f"check: die seen at the destination, partly in view at the bottom of the photo "
+                 f"(landed nearer the base than aimed), pixel ({d['u']:.0f}, {d['v']:.0f})")
             return
         off = angle_off(d["angle"], self.ref_for(*dst)["angle"])
         note(f"check: die seen at the destination, pixel ({d['u']:.0f}, {d['v']:.0f}), "

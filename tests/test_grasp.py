@@ -108,7 +108,7 @@ def _grasper(angles):
     g = grasp.Grasper(sk, snapshot=lambda: b"", log=lambda *a: None,
                       ref={"box": [320, 300], "angle": 0.0, "J": [[0, 4], [-4, 0]]})
     g.photo = lambda tag, settle=0.6: tag
-    g.die_here = lambda tag: (lambda a: None if a is None else
+    g.die_here = lambda tag, allow_cut=False: (lambda a: None if a is None else
                               {"u": 320, "v": 300, "angle": a, "size": 90})(next(seq))
     return g, sk
 
@@ -137,7 +137,7 @@ def test_pick_gives_up_when_squeezes_stall(monkeypatch):
 
 def test_move_picks_places_and_confirms(monkeypatch):
     g, sk = _grasper([4, None])  # pick: lined up + square, then gone from the source
-    monkeypatch.setattr(grasp, "find_die", lambda img: {"u": 300, "v": 310, "angle": 5, "size": 90})
+    monkeypatch.setattr(grasp, "find_die", lambda img, **kw: {"u": 300, "v": 310, "angle": 5, "size": 90})
     monkeypatch.setattr(grasp, "_cv2", lambda: cv2)
     g.photo = lambda tag, settle=0.6: np.zeros((48, 64, 3), np.uint8)
     ok, log, jpg = g.move((95, -65), (95, 65))
@@ -154,7 +154,7 @@ def test_move_stops_when_the_pick_misses():
 
 def test_knocked_die_counts_as_missed_and_is_retried(monkeypatch):
     g, sk = _grasper([4, 4, 4, None])  # first grab knocks it (still in view); retry gets it
-    monkeypatch.setattr(grasp, "find_die", lambda img: {"u": 300, "v": 310, "angle": 5, "size": 90})
+    monkeypatch.setattr(grasp, "find_die", lambda img, **kw: {"u": 300, "v": 310, "angle": 5, "size": 90})
     monkeypatch.setattr(grasp, "_cv2", lambda: cv2)
     g.photo = lambda tag, settle=0.6: np.zeros((48, 64, 3), np.uint8)
     ok, log, _ = g.move((95, -65), (95, 65))
