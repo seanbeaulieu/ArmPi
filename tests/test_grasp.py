@@ -159,3 +159,27 @@ def test_knocked_die_counts_as_missed_and_is_retried(monkeypatch):
     g.photo = lambda tag, settle=0.6: np.zeros((48, 64, 3), np.uint8)
     ok, log, _ = g.move((95, -65), (95, 65))
     assert ok and any("missed" in l for l in log) and any(l.startswith("retry") for l in log)
+
+
+def test_pick_refuses_when_the_fingers_would_tilt(monkeypatch):
+    g, sk = _grasper([4])
+    monkeypatch.setattr(g, "grab_tilt", lambda x, y: 17.0)
+    ok, why, _ = g.pick(105, -82)
+    assert not ok and "too far" in why
+    assert not [c for c in sk.calls if c[0] == "grip" and c[1] == 0.0]  # never closed
+
+
+def test_grab_tilt_real_model():
+    from armpi.arm import Arm
+    from armpi.calibration import Calibration
+    from armpi.skills import Skills, true_z_to_cmd
+
+    class NoBoard:
+        def set_pulses(self, p, ms):
+            return None
+
+    sk = Skills(Arm(NoBoard(), Calibration.load()), wait=lambda s: None, z_map=true_z_to_cmd)
+    g = grasp.Grasper(sk, snapshot=None, ref={"box": [0, 0], "angle": 0, "J": [[1, 0], [0, 1]]},
+                      log=lambda *a: None)
+    assert g.grab_tilt(95, -65) < grasp.MAX_TILT       # square centre: near vertical
+    assert g.grab_tilt(109, -88) > grasp.MAX_TILT      # the far corner that failed

@@ -34,6 +34,8 @@ LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it 
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 15       # die center within this of `box` -> lined up
 MAX_ANGLE = 25.0      # deg off square we still grab; 27-44 deg grabs hit corners and pushed the die
+MAX_TILT = 8.0        # deg from vertical the fingers may be at the grab; further out (shoulder at its
+                      # 0 deg limit) the wrist tilts and the pads shove the die (r ~133-140 mm: 15-20 deg)
 MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few more steps
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
@@ -197,6 +199,19 @@ class Grasper:
         rad, _ = gripper_frame(x, y)
         return x + f * rad[0], y + f * rad[1]
 
+    def grab_tilt(self, x, y):
+        """Degrees from vertical the fingers would be at, grabbing a die lined up at (x, y);
+        None if out of reach. (No arm model, e.g. a test double: 0.)"""
+        arm = getattr(self.sk, "arm", None)
+        if arm is None or not hasattr(self.sk, "cmd_z"):
+            return 0.0
+        from .calibration import JOINTS
+        from .kinematics import ik_search
+        fx, fy = self.fingers_at(x, y)
+        limits = {j: arm.calib.limits(j) for j in JOINTS if j != "gripper"}
+        sol = ik_search((fx, fy, self.sk.cmd_z(self.grip_z())), self.sk.pitch, limits)
+        return None if sol is None else abs(sol[1] + 90.0)
+
     def _grab(self, x, y):
         """From the look pose: forward to above (x, y), straight down, close, back up."""
         x, y = self.fingers_at(x, y)
@@ -259,6 +274,12 @@ class Grasper:
         d, x, y, off, err = self.square_up(x, y)
         if err:
             return False, err, (x, y)
+        tilt = self.grab_tilt(x, y)
+        if tilt is None or tilt > MAX_TILT:
+            r_mm = math.hypot(*self.fingers_at(x, y))
+            return False, ("too far to grab reliably: " + (f"the fingers would be {tilt:.0f} deg "
+                           f"from vertical" if tilt is not None else "out of reach")
+                           + f" {r_mm:.0f} mm from the base (max {MAX_TILT:.0f} deg)"), (x, y)
         if abs(off) > MAX_ANGLE:
             return False, f"die is rotated {off:.0f} deg to the fingers; needs straightening", (x, y)
         self._grab(x, y)
