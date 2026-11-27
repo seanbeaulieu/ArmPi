@@ -147,6 +147,15 @@ def test_move_picks_places_and_confirms(monkeypatch):
 
 
 def test_move_stops_when_the_pick_misses():
-    g, sk = _grasper([4, 4])  # die still there after the grab
+    g, sk = _grasper([4, 4, 4, 4])  # die still there after the grab, and after the retry
     ok, log, jpg = g.move((95, -65), (95, 65))
     assert not ok and jpg is None and "missed" in log[-1]
+
+
+def test_knocked_die_counts_as_missed_and_is_retried(monkeypatch):
+    g, sk = _grasper([4, 4, 4, None])  # first grab knocks it (still in view); retry gets it
+    monkeypatch.setattr(grasp, "find_die", lambda img: {"u": 300, "v": 310, "angle": 5, "size": 90})
+    monkeypatch.setattr(grasp, "_cv2", lambda: cv2)
+    g.photo = lambda tag, settle=0.6: np.zeros((48, 64, 3), np.uint8)
+    ok, log, _ = g.move((95, -65), (95, 65))
+    assert ok and any("missed" in l for l in log) and any(l.startswith("retry") for l in log)

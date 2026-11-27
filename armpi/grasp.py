@@ -265,10 +265,13 @@ class Grasper:
         # held check: the die must be gone from where it was (in the fingers, out of frame)
         self.sk._go((*self.look_pose(x, y), PREGRASP_Z), self.sk.slow_ms)
         d = self.die_here("after_grab")
-        if d is None or math.dist((d["u"], d["v"]), r["box"]) > 3 * BOX_TOL_PX:
+        if d is None:  # any die still in view = on the table (a knocked die lands elsewhere)
             return True, f"die picked up (it was {off:+.0f} deg off square)", (x, y)
         self.sk.gripper(self.sk.open_frac)
-        return False, "grab missed (die still on the table)", (x, y)
+        # where it is now, for a retry: pixel offset from the box -> mm, like a nudge
+        dx, dy = correction_mm(r["J"], d["u"] - r["box"][0], d["v"] - r["box"][1],
+                               *self.look_pose(x, y), max_step=40.0)
+        return False, "grab missed (die still on the table)", (x + dx, y + dy)
 
     def place(self, x, y, drop=2.0):
         self.sk._go((x, y, PREGRASP_Z), self.sk.move_ms)
@@ -282,10 +285,13 @@ class Grasper:
         log, say = [], self.log
         self.log = lambda m: (log.append(m), say(m))
         try:
-            ok, why, _ = self.pick(*src)
+            ok, why, at = self.pick(*src)
+            log.append(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
+            if not ok and "missed" in why:  # one retry from where the die is now
+                ok, why, _ = self.pick(*at)
+                log.append(f"retry near ({at[0]:.0f}, {at[1]:.0f}): {why}")
         finally:
             self.log = say
-        log.append(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
         if not ok:
             self.sk.gripper(self.sk.open_frac)
             return False, log, None
