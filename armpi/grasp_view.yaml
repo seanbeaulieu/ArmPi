@@ -1,0 +1,18 @@
+# visual grasp reference (python armpi/grasp.py teach); see armpi/grasp.py
+H:
+- - -0.0081347
+  - -0.13518838
+  - 75.27550131
+- - -0.11801123
+  - 0.00055581
+  - 36.08410603
+- - 6.109e-05
+  - -0.00030837
+  - 1.0
+z: 45.0
+taught_at:
+- 95.0
+- -65.0
+points: 9
+max_err_mm: 1.79
+mean_err_mm: 0.86

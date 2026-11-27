@@ -33,6 +33,8 @@ FAR_REF_PATH = Path(__file__).with_name("grasp_ref_far.yaml")
 VIEW_PATH = Path(__file__).with_name("grasp_view.yaml")
 # camera offsets (radial, tangential mm) for calibrate_view: moving the camera back makes the
 # die look further out, so this covers dice ~-15..+40 mm radially, +-15 mm sideways
+VIEW_SHIFTS = (0.0, 20.0, -20.0)  # extra camera poses (mm out from the centre view), all vertical
+VIEW_A_RANGE = (18.0, 60.0)       # mm ahead of the camera pose the fitted map covers (+ margin)
 VIEW_GRID = [(cr, ct) for cr in (15, 0, -15, -30, -40) for ct in (-15, 0, 15)]
 PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
@@ -390,16 +392,29 @@ class Grasper:
         return view
 
     def locate(self, x, y, tag="view"):
-        """Photo from the fixed view for the region at (x, y) -> (die xy mm or None, detection)."""
-        vx, vy = self.view_pose(x, y)
-        self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
-        d = self.die_here(tag, allow_cut=True)
-        if d is None or d.get("cut"):
-            return None, d
-        a, b = _apply_h(np.asarray(self.view["H"]), (d["u"], d["v"]))
-        rad, tan = gripper_frame(vx, vy)
-        p = np.array([vx, vy]) + a * rad + b * tan
-        return (float(p[0]), float(p[1])), d
+        """Die position (mm) for the region at (x, y) from the fixed vertical views: the
+        centre view, then one 20 mm further out, then one 20 mm further in. The pixel -> mm
+        map is in the camera pose's own frame, so it holds for any vertical view; a reading
+        counts only inside the range the map was fitted on (VIEW_A_RANGE ahead, +-18 mm side).
+        -> (die xy or None, last detection)."""
+        rad, tan = gripper_frame(x, y)
+        cx, cy = self.view_pose(x, y)
+        d = None
+        for k, shift in enumerate(VIEW_SHIFTS):
+            vx, vy = cx + shift * rad[0], cy + shift * rad[1]
+            self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
+            d = self.die_here(f"{tag}{k}", allow_cut=True)
+            if d is None or d.get("cut"):
+                continue
+            a, b = _apply_h(np.asarray(self.view["H"]), (d["u"], d["v"]))
+            if not (VIEW_A_RANGE[0] <= a <= VIEW_A_RANGE[1] and abs(b) <= 18):
+                self.log(f"  ({a:.0f}, {b:+.0f}) mm from this view: outside the mapped range")
+                continue
+            r2, t2 = gripper_frame(vx, vy)
+            p = np.array([vx, vy]) + a * r2 + b * t2
+            self.view_used = (vx, vy)
+            return (float(p[0]), float(p[1])), d
+        return None, d
 
     def pick_direct(self, x, y):
         """Fixed view: one photo -> die position -> grab there -> look again from the same view.
@@ -420,7 +435,7 @@ class Grasper:
         if abs(off) > MAX_ANGLE:
             return False, f"die is rotated {off:.0f} deg to the fingers; needs straightening", (gx, gy)
         self._grab(gx, gy)
-        vx, vy = self.view_pose(x, y)
+        vx, vy = self.view_used
         self.sk._go((vx, vy, PREGRASP_Z), self.sk.slow_ms)
         if self.die_here("after_grab", allow_cut=True) is None:
             return True, f"die picked up at ({gx:.0f}, {gy:.0f}) ({off:+.0f} deg off square)", (gx, gy)
