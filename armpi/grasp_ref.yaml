@@ -14,4 +14,4 @@ J:
   - 9.75
 - - 13.17
   - -1.67
-grab_forward_mm: 1.5  # Sean: first grab closed on the die's back half
+grab_forward_mm: -1.0  # Sean: +1.5 grabbed "a bit too out" in the fixed-view series

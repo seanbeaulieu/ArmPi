@@ -52,7 +52,7 @@ MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few mor
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
                       # a plain fast close + lift squared it enough (Sean, 2026-11-27)
-PLACE_FORWARD_MM = 4.0  # place this much further out than asked (the die sits behind the tips)
+PLACE_FORWARD_MM = 2.0  # place this much further out than asked (the die sits behind the tips)
 RELEASE_FRAC = 0.5    # place: open this far, slowly, before lifting away
 RELEASE_MS = 800
 SQUEEZE_MS = 1500     # slow close, so the die turns instead of popping out
