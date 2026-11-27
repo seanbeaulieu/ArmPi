@@ -51,6 +51,8 @@ MAX_NUDGES = 5        # off-centre the taught gain is a bit off: allow a few mor
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
 MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
                       # a plain fast close + lift squared it enough (Sean, 2026-11-27)
+RELEASE_FRAC = 0.5    # place: open this far, slowly, before lifting away
+RELEASE_MS = 800
 SQUEEZE_MS = 1500     # slow close, so the die turns instead of popping out
 MAX_STEP_MM = 15.0
 
@@ -349,9 +351,14 @@ class Grasper:
                                *self.look_pose(x, y), max_step=40.0)
         return False, "grab missed (die still on the table)", (x + dx, y + dy)
 
-    def place(self, x, y, drop=2.0):
+    def place(self, x, y, drop=1.0):
+        """Gentle set-down: lower until the die (almost) touches, open slowly and only partway
+        (a fast full open flicked it: it twisted 7 -> 29 deg over two places), lift clear, then
+        open fully."""
         self.sk._go((x, y, PREGRASP_Z), self.sk.move_ms)
         self.sk._go((x, y, self.grip_z() + drop), self.sk.slow_ms)
+        self.sk.gripper(RELEASE_FRAC, RELEASE_MS)
+        self.sk._go((x, y, self.grip_z() + 15.0), self.sk.slow_ms)
         self.sk.gripper(self.sk.open_frac)
         self.sk._go((x, y, PREGRASP_Z), self.sk.slow_ms)
 
