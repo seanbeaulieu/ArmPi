@@ -347,6 +347,7 @@ def main(argv=None):
     elif a.step == "pick":
         print(g.pick(a.x, a.y))
     elif a.step == "move":
+        g.log = lambda m: None  # move() returns the whole log; print it once
         ok, log, _ = g.move(src, dst)
         print("\n".join(log + ["DONE" if ok else "FAILED"]))
     else:
