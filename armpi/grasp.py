@@ -283,31 +283,36 @@ class Grasper:
         """Pick the die near src (x, y), place it at dst, look to confirm.
         -> (ok, log lines, photo bytes of the final look or None)."""
         log, say = [], self.log
-        self.log = lambda m: (log.append(m), say(m))
+        self.log = note = lambda m: (log.append(m), say(m))
         try:
             ok, why, at = self.pick(*src)
-            log.append(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
+            note(f"pick near ({src[0]:.0f}, {src[1]:.0f}): {why}")
             if not ok and "missed" in why:  # one retry from where the die is now
                 ok, why, _ = self.pick(*at)
-                log.append(f"retry near ({at[0]:.0f}, {at[1]:.0f}): {why}")
+                note(f"retry near ({at[0]:.0f}, {at[1]:.0f}): {why}")
+            if ok:
+                self._finish_move(dst, note)
         finally:
             self.log = say
         if not ok:
             self.sk.gripper(self.sk.open_frac)
             return False, log, None
+        return self._result, log, self._jpg
+
+    def _finish_move(self, dst, note):
         self.place(*dst)
-        log.append(f"placed at ({dst[0]:.0f}, {dst[1]:.0f})")
+        note(f"placed at ({dst[0]:.0f}, {dst[1]:.0f})")
         self.pregrasp(*dst)
         img = self.photo("check")
-        jpg = _cv2().imencode(".jpg", img)[1].tobytes()
+        self._jpg = _cv2().imencode(".jpg", img)[1].tobytes()
         d = find_die(img)
+        self._result = d is not None
         if d is None:
-            log.append("check: die NOT seen at the destination")
-            return False, log, jpg
+            note("check: die NOT seen at the destination")
+            return
         off = angle_off(d["angle"], self.ref["angle"])
-        log.append(f"check: die seen at the destination, pixel ({d['u']:.0f}, {d['v']:.0f}), "
-                   f"{off:+.0f} deg off square")
-        return True, log, jpg
+        note(f"check: die seen at the destination, pixel ({d['u']:.0f}, {d['v']:.0f}), "
+             f"{off:+.0f} deg off square")
 
 
 def main(argv=None):
@@ -353,9 +358,8 @@ def main(argv=None):
     elif a.step == "pick":
         print(g.pick(a.x, a.y))
     elif a.step == "move":
-        g.log = lambda m: None  # move() returns the whole log; print it once
-        ok, log, _ = g.move(src, dst)
-        print("\n".join(log + ["DONE" if ok else "FAILED"]))
+        ok, _, _ = g.move(src, dst)  # logs as it goes
+        print("DONE" if ok else "FAILED")
     else:
         g.place(a.x, a.y)
 

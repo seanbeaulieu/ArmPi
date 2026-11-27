@@ -26,6 +26,7 @@ import argparse
 import json
 import math
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -326,9 +327,19 @@ def handeye_poses(target=(130.0, 0.0, 0.0), cam=None, limits=None, n=12):
 
 
 # --- talking to the Pi ----------------------------------------------------------------------
-def _get(url, path, timeout=10):
-    with urllib.request.urlopen(url.rstrip("/") + path, timeout=timeout) as r:
-        return r.read()
+def _get(url, path, timeout=10, retries=2):
+    """GET with a couple of retries: the camera answers 503 for a moment after idling, and the
+    PC's network (WSL) drops a request now and then."""
+    import time
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + path, timeout=timeout) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            code = getattr(e, "code", None)
+            if attempt == retries or (code is not None and code != 503):
+                raise
+            time.sleep(1.0 * (attempt + 1))
 
 
 def _post(url, path, body, timeout=10):

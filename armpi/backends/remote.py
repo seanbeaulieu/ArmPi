@@ -6,6 +6,7 @@ The server's own Arm applies the speed guard again, so a too-fast move from here
 is slowed down there too. Stdlib only.
 """
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -13,20 +14,28 @@ from .base import Backend
 
 
 class RemoteBackend(Backend):
-    def __init__(self, url="http://armpi.local:8000", timeout=5.0):
+    def __init__(self, url="http://armpi.local:8000", timeout=5.0, retries=2):
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.retries = retries
 
     def _call(self, path, body=None):
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self.url + path, data=data,
                                      headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            msg = json.loads(e.read() or b"{}").get("error", e.reason)
-            raise (ValueError if e.code == 400 else OSError)(f"{path}: {msg}") from None
+        for attempt in range(self.retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                msg = json.loads(e.read() or b"{}").get("error", e.reason)
+                raise (ValueError if e.code == 400 else OSError)(f"{path}: {msg}") from None
+            except (urllib.error.URLError, TimeoutError, ConnectionError):
+                # the PC's network (WSL) drops a request now and then; every call here is
+                # idempotent (set pulses / select / read), so sending it again is safe
+                if attempt == self.retries:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
 
     def set_pulses(self, pulses, duration_ms):
         """Returns the duration the server actually uses (its own speed guard may lengthen it,
