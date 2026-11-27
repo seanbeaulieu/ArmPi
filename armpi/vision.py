@@ -327,7 +327,7 @@ def handeye_poses(target=(130.0, 0.0, 0.0), cam=None, limits=None, n=12):
 
 
 # --- talking to the Pi ----------------------------------------------------------------------
-def _get(url, path, timeout=10, retries=2):
+def _get(url, path, timeout=10, retries=4):
     """GET with a couple of retries: the camera answers 503 for a moment after idling, and the
     PC's network (WSL) drops a request now and then."""
     import time

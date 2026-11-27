@@ -1,0 +1,17 @@
+# visual grasp reference (python armpi/grasp.py teach); see armpi/grasp.py
+box:
+- 332.3
+- 368.6
+angle: 83.7
+size: 129.9
+taught_at:
+- 127.1
+- -86.9
+look_back_mm: 25.0
+pregrasp_z: 45.0
+J:
+- - -0.41
+  - 8.17
+- - 2.86
+  - -1.17
+grab_forward_mm: 1.5

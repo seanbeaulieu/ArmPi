@@ -14,7 +14,7 @@ from .base import Backend
 
 
 class RemoteBackend(Backend):
-    def __init__(self, url="http://armpi.local:8000", timeout=5.0, retries=2):
+    def __init__(self, url="http://armpi.local:8000", timeout=5.0, retries=4):
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
@@ -35,7 +35,7 @@ class RemoteBackend(Backend):
                 # idempotent (set pulses / select / read), so sending it again is safe
                 if attempt == self.retries:
                     raise
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(1.0 * (attempt + 1))
 
     def set_pulses(self, pulses, duration_ms):
         """Returns the duration the server actually uses (its own speed guard may lengthen it,

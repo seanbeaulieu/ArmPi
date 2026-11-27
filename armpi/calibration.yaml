@@ -33,7 +33,7 @@ joints:
     sign: -1
     trim: -30
     limits:
-    - 0
+    - -6  # servo end of travel ~-6.7 (2500 us); was a 0 placeholder
     - 155
     rest: 141.0
   elbow:
