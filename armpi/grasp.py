@@ -33,10 +33,11 @@ PREGRASP_Z = 45.0     # real mm (real_skills maps real z -> commanded)
 LOOK_BACK_MM = 25.0   # look from this far back toward the base: right above it the die is out of frame
 GRIP_MIN_Z = 2.0      # real fingertip floor for the die (real_skills maps real z -> commanded)
 BOX_TOL_PX = 12       # die center within this of `box` -> lined up
-MAX_ANGLE = 25.0      # deg off square that we still try
+MAX_ANGLE = 35.0      # deg off square that we still grab (the close itself twists it square)
 MAX_NUDGES = 3
 SQUARE_TOL = 10.0     # deg off square that's fine to grab as is
-MAX_SQUEEZES = 2
+MAX_SQUEEZES = 0       # off: slow squeezes slid the die (and the paper) instead of turning it;
+                      # a plain fast close + lift squared it enough (Sean, 2026-11-27)
 SQUEEZE_MS = 1500     # slow close, so the die turns instead of popping out
 MAX_STEP_MM = 15.0
 

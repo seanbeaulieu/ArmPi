@@ -113,7 +113,8 @@ def _grasper(angles):
     return g, sk
 
 
-def test_pick_squeezes_a_turned_die_then_grabs():
+def test_pick_squeezes_a_turned_die_then_grabs(monkeypatch):
+    monkeypatch.setattr(grasp, "MAX_SQUEEZES", 2)  # off by default on the real arm
     g, sk = _grasper([35, 3, None])  # 35 deg off -> squeeze -> square -> gone after grab
     ok, why, _ = g.pick(95, -65)
     assert ok, why
@@ -127,7 +128,8 @@ def test_pick_square_die_no_squeeze():
     assert ok and not [c for c in sk.calls if c[0] == "grip" and c[2] == grasp.SQUEEZE_MS]
 
 
-def test_pick_gives_up_when_squeezes_stall():
+def test_pick_gives_up_when_squeezes_stall(monkeypatch):
+    monkeypatch.setattr(grasp, "MAX_SQUEEZES", 2)
     g, sk = _grasper([44, 44, 44])
     ok, why, _ = g.pick(95, -65)
     assert not ok and "rotated" in why
